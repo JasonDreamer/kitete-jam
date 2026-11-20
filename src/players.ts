@@ -6,6 +6,7 @@ declare global {
     YT?: any
     SC?: any
     onYouTubeIframeAPIReady?: () => void
+    onSpotifyIframeApiReady?: (api: any) => void
   }
 }
 
@@ -18,6 +19,7 @@ const loadScript = (src: string) =>
   new Promise<void>((resolve, reject) => {
     const s = document.createElement('script')
     s.src = src
+    s.async = true
     s.onload = () => resolve()
     s.onerror = () => reject(new Error(`読み込み失敗: ${src}`))
     document.head.append(s)
@@ -34,18 +36,41 @@ const ensureYt = () =>
 let scApi: Promise<void> | null = null
 const ensureSc = () => (scApi ??= window.SC?.Widget ? Promise.resolve() : loadScript('https://w.soundcloud.com/player/api.js'))
 
+let spApi: Promise<any> | null = null
+const ensureSp = () =>
+  (spApi ??= new Promise<any>((resolve, reject) => {
+    // スクリプトより先にコールバックを置かないと呼ばれない
+    window.onSpotifyIframeApiReady = api => resolve(api)
+    loadScript('https://open.spotify.com/embed/iframe-api/v1').catch(reject)
+  }))
+
+/** Spotify の埋め込みは未ログインだと30秒以内の試聴になる */
+const PREVIEW_MAX_SEC = 31
+
 /**
- * YouTube と SoundCloud の埋め込みを同じ操作で扱う。
- * どちらの iframe も一度だけ作り、曲が変わったら中身だけ差し替える。
+ * YouTube・SoundCloud・Spotify の埋め込みを同じ操作で扱う。
+ * それぞれの iframe は一度だけ作り、曲が変わったら中身だけ差し替える。
  */
 export class Deck {
   private yt: any = null
   private ytReady: Promise<void> | null = null
+
   private sc: any = null
   private scReady: Promise<void> | null = null
   private scPos = 0
   private scDur = 0
   private scPlaying = false
+
+  private sp: any = null
+  private spReady: Promise<void> | null = null
+  private spPos = 0
+  private spPosAt = 0
+  private spDur = 0
+  private spPlaying = false
+  private spStartAt = 0
+  private spPendingPlay = false
+  private spEndedFor: string | null = null
+
   private active: Kind | null = null
   private trackId: string | null = null
   private volume = 80
@@ -53,8 +78,7 @@ export class Deck {
   loading = false
 
   constructor(
-    private ytHost: HTMLElement,
-    private scHost: HTMLElement,
+    private hosts: Record<Kind, HTMLElement>,
     private ev: PlayerEvents
   ) {}
 
@@ -62,12 +86,26 @@ export class Deck {
     return this.trackId
   }
 
+  get kind() {
+    return this.active
+  }
+
+  /** Spotify が30秒の試聴になっているか（ログインしていない） */
+  get isPreview() {
+    return this.active === 'sp' && this.spDur > 0 && this.spDur <= PREVIEW_MAX_SEC
+  }
+
+  /** 音量を変えられるか（Spotify の埋め込みは音量 API が無い） */
+  get canSetVolume() {
+    return this.active !== 'sp'
+  }
+
   private initYt() {
     return (this.ytReady ??= ensureYt().then(
       () =>
         new Promise<void>(resolve => {
           const el = document.createElement('div')
-          this.ytHost.append(el)
+          this.hosts.yt.append(el)
           this.yt = new window.YT.Player(el, {
             width: '100%',
             height: '100%',
@@ -82,9 +120,9 @@ export class Deck {
                 if (this.active !== 'yt' || !this.trackId) return
                 const reason =
                   e.data === 101 || e.data === 150
-                    ? '投稿者が埋め込み再生を許可していない動画でした'
+                    ? '埋め込み再生できない動画です'
                     : e.data === 100
-                      ? '削除されたか非公開の動画でした'
+                      ? '削除されたか非公開の動画です'
                       : `YouTube のエラー ${e.data}`
                 this.ev.onError(this.trackId, reason)
               }
@@ -100,9 +138,9 @@ export class Deck {
         new Promise<void>(resolve => {
           const f = document.createElement('iframe')
           f.allow = 'autoplay'
-          f.title = 'SoundCloud プレイヤー'
+          f.title = 'SoundCloud'
           f.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(firstUrl)}&auto_play=false&visual=true&show_comments=false&hide_related=true`
-          this.scHost.append(f)
+          this.hosts.sc.append(f)
           const W = window.SC.Widget
           this.sc = W(f)
           this.sc.bind(W.Events.READY, () => resolve())
@@ -119,15 +157,49 @@ export class Deck {
             if (this.active === 'sc' && this.trackId) this.ev.onEnded(this.trackId)
           })
           this.sc.bind(W.Events.ERROR, () => {
-            if (this.active === 'sc' && this.trackId) this.ev.onError(this.trackId, 'SoundCloud で再生できない曲でした')
+            if (this.active === 'sc' && this.trackId) this.ev.onError(this.trackId, 'SoundCloud で再生できない曲です')
+          })
+        })
+    ))
+  }
+
+  private initSp(firstUri: string) {
+    return (this.spReady ??= ensureSp().then(
+      api =>
+        new Promise<void>(resolve => {
+          const el = document.createElement('div')
+          this.hosts.sp.append(el)
+          api.createController(el, {uri: firstUri, width: '100%', height: '100%'}, (ctrl: any) => {
+            this.sp = ctrl
+            // 既定の loading="lazy" だと裏のタブで読み込まれないので即時にする
+            const f = this.hosts.sp.querySelector('iframe')
+            if (f) f.loading = 'eager'
+            ctrl.addListener('ready', () => resolve())
+            ctrl.addListener(
+              'playback_update',
+              (e: {data: {isPaused: boolean; isBuffering: boolean; position: number; duration: number}}) => {
+                const d = e.data
+                this.spPos = d.position / 1000
+                this.spPosAt = performance.now()
+                if (d.duration) this.spDur = d.duration / 1000
+                this.spPlaying = !d.isPaused && !d.isBuffering
+                if (this.spPlaying) this.loading = false
+                // 最後まで行くと位置が長さに達して止まる（一時停止の印は立たない）
+                const atEnd = d.duration > 0 && d.position >= d.duration - 500
+                if (atEnd) this.spPlaying = false
+                if (atEnd && this.active === 'sp' && this.trackId && this.spEndedFor !== this.trackId) {
+                  this.spEndedFor = this.trackId
+                  this.ev.onEnded(this.trackId)
+                }
+              }
+            )
           })
         })
     ))
   }
 
   private show(kind: Kind | null) {
-    this.ytHost.hidden = kind !== 'yt'
-    this.scHost.hidden = kind !== 'sc'
+    for (const k of Object.keys(this.hosts) as Kind[]) this.hosts[k].hidden = k !== kind
   }
 
   async load(track: Track, startSec: number, playing: boolean) {
@@ -146,7 +218,7 @@ export class Deck {
         this.yt.cueVideoById({videoId: track.ref, startSeconds: startSec})
         this.loading = false
       }
-    } else {
+    } else if (track.kind === 'sc') {
       const fresh = !this.scReady
       await this.initSc(track.ref)
       if (this.trackId !== track.id) return
@@ -161,18 +233,42 @@ export class Deck {
       }
       if (fresh) after()
       else this.sc.load(track.ref, {auto_play: false, visual: true, show_comments: false, hide_related: true, callback: after})
+    } else {
+      const fresh = !this.spReady
+      this.spDur = 0
+      this.spPos = startSec
+      this.spPosAt = performance.now()
+      await this.initSp(track.ref)
+      if (this.trackId !== track.id) return
+      if (!fresh) this.sp.loadUri(track.ref)
+      this.spStartAt = startSec
+      if (playing) {
+        this.sp.play()
+        // 読み込み直後は seek が効かないことがあるので、再生が始まってから位置を合わせる
+        this.spPendingPlay = true
+        setTimeout(() => {
+          if (this.trackId === track.id && this.spPendingPlay) {
+            this.spPendingPlay = false
+            this.sp.seek(this.spStartAt)
+          }
+        }, 1200)
+      } else {
+        this.loading = false
+      }
     }
   }
 
   private pauseOther(next: Kind) {
     if (next !== 'yt' && this.yt) this.yt.stopVideo?.()
     if (next !== 'sc' && this.sc) this.sc.pause()
+    if (next !== 'sp' && this.sp && this.spPlaying) this.sp.pause()
   }
 
   clear() {
     this.trackId = null
     this.yt?.stopVideo?.()
     this.sc?.pause()
+    if (this.sp && this.spPlaying) this.sp.pause()
     this.active = null
     this.show(null)
   }
@@ -180,11 +276,13 @@ export class Deck {
   play() {
     if (this.active === 'yt') this.yt?.playVideo()
     if (this.active === 'sc') this.sc?.play()
+    if (this.active === 'sp' && !this.spPlaying) this.sp?.resume()
   }
 
   pause() {
     if (this.active === 'yt') this.yt?.pauseVideo()
     if (this.active === 'sc') this.sc?.pause()
+    if (this.active === 'sp' && this.spPlaying) this.sp?.pause()
   }
 
   seek(sec: number) {
@@ -192,6 +290,11 @@ export class Deck {
     if (this.active === 'sc') {
       this.scPos = sec
       this.sc?.seekTo(sec * 1000)
+    }
+    if (this.active === 'sp') {
+      this.spPos = sec
+      this.spPosAt = performance.now()
+      this.sp?.seek(Math.round(sec))
     }
   }
 
@@ -205,19 +308,31 @@ export class Deck {
   time(): number {
     if (this.active === 'yt') return this.yt?.getCurrentTime?.() ?? 0
     if (this.active === 'sc') return this.scPos
+    if (this.active === 'sp') {
+      // playback_update は間隔があくので、再生中は経過時間で補う
+      const t = this.spPos + (this.spPlaying ? (performance.now() - this.spPosAt) / 1000 : 0)
+      return this.spDur ? Math.min(t, this.spDur) : t
+    }
     return 0
   }
 
   duration(): number {
     if (this.active === 'yt') return this.yt?.getDuration?.() ?? 0
     if (this.active === 'sc') return this.scDur
+    if (this.active === 'sp') return this.spDur
     return 0
+  }
+
+  /** 位置合わせの許容差。Spotify は秒単位でしか seek できない */
+  get tolerance() {
+    return this.active === 'sp' ? 1.5 : 0.8
   }
 
   /** 実際に音が出ているか（自動再生ブロックの検出用） */
   isPlaying(): boolean {
     if (this.active === 'yt') return this.yt?.getPlayerState?.() === 1
     if (this.active === 'sc') return this.scPlaying
+    if (this.active === 'sp') return this.spPlaying
     return false
   }
 }

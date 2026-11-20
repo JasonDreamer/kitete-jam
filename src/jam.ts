@@ -16,6 +16,9 @@ export type JamState = {
 const EMPTY: JamState = {now: null, play: {playing: false, pos: 0, at: 0}, queue: [], log: []}
 const LOG_MAX = 60
 
+/** Spotify の試聴（30秒）が終わったことを知らせる時の印 */
+export const PREVIEW_ENDED = 'preview-ended'
+
 export type Route = '直接' | 'TURN経由' | 'ほかの人経由' | '確認中'
 
 export const APP_ID = 'kitete-jam/v1'
@@ -134,8 +137,10 @@ export class Jam {
     f.peers.add(peerId)
     this.failures.set(trackId, f)
     const total = 1 + Object.keys(this.room.getPeers()).length
-    if (this.isLeader() && f.peers.size * 2 >= total && this.state.get().now?.id === trackId) {
-      void this.next(trackId, `再生できない人が多かったので飛ばした（${f.reason}）`)
+    // 試聴で終わっただけなら、最後まで聴けている人がいる限り進めない
+    const enough = reason === PREVIEW_ENDED ? f.peers.size >= total : f.peers.size * 2 >= total
+    if (this.isLeader() && enough && this.state.get().now?.id === trackId) {
+      void this.next(trackId, reason === PREVIEW_ENDED ? null : `スキップしました: ${f.reason}`)
     }
   }
 
@@ -166,14 +171,14 @@ export class Jam {
     return [...s.log, {at: Date.now(), text, kind: 'event' as const, ...extra}].slice(-LOG_MAX)
   }
 
-  private startTrack(s: JamState, t: Track, queue: Track[], note: string): JamState {
+  private startTrack(s: JamState, t: Track, queue: Track[], note: string | null): JamState {
     return {
       ...s,
       now: t,
       queue,
       play: {playing: true, pos: 0, at: Date.now()},
       log: [
-        ...this.log(s, note),
+        ...(note ? this.log(s, note) : s.log),
         {at: Date.now(), text: t.title, trackId: t.id, kind: 'played' as const}
       ].slice(-LOG_MAX)
     }
@@ -181,19 +186,20 @@ export class Jam {
 
   add(t: Track) {
     return this.update(s => {
-      if (!s.now) return this.startTrack(s, t, s.queue, `${t.addedBy}さんが「${t.title}」をかけた`)
-      return {...s, queue: [...s.queue, t], log: this.log(s, `${t.addedBy}さんが「${t.title}」をキューに入れた`)}
+      if (!s.now) return this.startTrack(s, t, s.queue, `${t.addedBy}さんが「${t.title}」を追加`)
+      return {...s, queue: [...s.queue, t], log: this.log(s, `${t.addedBy}さんが「${t.title}」を追加`)}
     })
   }
 
   /** fromId が今の曲のときだけ次へ進む。複数人が同時に押しても二曲飛ばない */
-  next(fromId: string | null, reason?: string) {
+  /** reason が null の時は、曲が終わって自然に進んだだけなので知らせない */
+  next(fromId: string | null, reason?: string | null) {
     return this.update(s => {
       if ((s.now?.id ?? null) !== fromId) return s
       const [head, ...rest] = s.queue
-      const note = reason ?? `${this.myName()}さんが次の曲へ送った`
+      const note = reason === undefined ? `${this.myName()}さんがスキップ` : reason
       if (!head) {
-        return {...s, now: null, play: {playing: false, pos: 0, at: Date.now()}, log: this.log(s, `${note}。キューが空になった`)}
+        return {...s, now: null, play: {playing: false, pos: 0, at: Date.now()}, log: note ? this.log(s, note) : s.log}
       }
       return this.startTrack(s, head, rest, note)
     })
@@ -205,7 +211,7 @@ export class Jam {
       return {
         ...s,
         play: {...s.play, playing},
-        log: this.log(s, `${this.myName()}さんが${playing ? '再生した' : '一時停止した'}`)
+        log: this.log(s, `${this.myName()}さんが${playing ? '再生' : '一時停止'}`)
       }
     })
   }
@@ -218,7 +224,7 @@ export class Jam {
     return this.update(s => {
       const t = s.queue.find(q => q.id === id)
       if (!t) return s
-      return {...s, queue: s.queue.filter(q => q.id !== id), log: this.log(s, `${this.myName()}さんが「${t.title}」をキューから外した`)}
+      return {...s, queue: s.queue.filter(q => q.id !== id), log: this.log(s, `${this.myName()}さんが「${t.title}」を外しました`)}
     })
   }
 

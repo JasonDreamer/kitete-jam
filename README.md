@@ -1,5 +1,7 @@
 # kitete jam
 
+公開URL: https://jasondreamer.github.io/kitete-jam/
+
 身内だけで同じ曲を同時に聴くためのリスニングルーム。YouTube と SoundCloud のURLを貼ると、部屋にいる全員の端末で同じ位置から流れる。
 
 ## 仕組み

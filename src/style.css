@@ -1,0 +1,572 @@
+/*
+  夜のリスニング部屋。
+  色: 暖かい黒の地 + 紙色の文字 + 電球色のアクセント1色（進行バーと主ボタンだけ）。
+  暗い固定テーマなのは、夜に灯りを落として聴く部屋という方向性と、ジャケットや動画を主役にするため。
+  書体: 曲名と時刻は明朝（ライナーノーツの手触り）、操作系は角ゴシック（小さい文字でも読める）。
+*/
+:root {
+  --bg: #15120f;
+  --surface: #1e1a16;
+  --surface-2: #262019;
+  --line: #3b332b;
+  --text: #efe6d8;
+  --muted: #b5a794;
+  --lamp: #e9a23b;
+  --on-lamp: #1a1207;
+  --danger: #f0a08c;
+
+  --serif: 'Shippori Mincho', 'Yu Mincho', serif;
+  --sans: 'Zen Kaku Gothic New', 'Yu Gothic UI', system-ui, sans-serif;
+
+  --r-s: 4px;
+  --r-m: 8px;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 2px;
+}
+
+p {
+  margin: 0;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: var(--r-s);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.primary {
+  background: var(--lamp);
+  color: var(--on-lamp);
+  font-weight: 700;
+}
+
+.primary:hover:not(:disabled) {
+  background: #f2b453;
+}
+
+.ghost {
+  background: transparent;
+  border-color: var(--line);
+}
+
+.ghost:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.link {
+  min-height: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--lamp);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+input[type='url'],
+input:not([type]) {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-s);
+}
+
+input::placeholder {
+  color: #8f8272;
+}
+
+label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---------- 入口 ---------- */
+
+.wordmark {
+  font-family: var(--serif);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.entry {
+  max-width: 440px;
+  margin: 0 auto;
+  padding: 18vh 16px 48px;
+}
+
+.entry .wordmark {
+  font-size: clamp(40px, 9vw, 64px);
+  line-height: 1.1;
+}
+
+.lede {
+  margin-top: 16px;
+  color: var(--muted);
+}
+
+.entry-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 40px;
+}
+
+.entry-form .primary {
+  margin-top: 12px;
+}
+
+.fine {
+  margin-top: 32px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ---------- 部屋 ---------- */
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.wordmark.small {
+  font-size: 20px;
+}
+
+.presence {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 40px;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+
+.stage {
+  min-width: 0;
+}
+
+.screen {
+  aspect-ratio: 16 / 9;
+  background: #0d0b09;
+  border-radius: var(--r-m);
+  overflow: hidden;
+  position: relative;
+}
+
+.embed,
+.embed iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.idle {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.idle p:first-child {
+  font-family: var(--serif);
+  font-size: 22px;
+  color: var(--text);
+}
+
+.now {
+  margin-top: 24px;
+}
+
+.now-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: clamp(22px, 3vw, 30px);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.now-by {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scrub {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.t {
+  font-family: var(--serif);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 13px;
+  min-width: 3.2em;
+}
+
+.t:last-child {
+  text-align: right;
+}
+
+input[type='range'] {
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  background: transparent;
+  accent-color: var(--lamp);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.controls #toggle {
+  min-width: 112px;
+}
+
+.vol {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  width: 220px;
+}
+
+.vol span {
+  white-space: nowrap;
+}
+
+.notice {
+  margin-top: 12px;
+  color: var(--text);
+}
+
+.add {
+  margin-top: 40px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+}
+
+.add-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.add-msg {
+  min-height: 1.6em;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.add-msg[data-tone='error'] {
+  color: var(--danger);
+}
+
+/* ---------- サイド: キューとタイムライン ---------- */
+
+.side {
+  display: grid;
+  gap: 40px;
+  align-content: start;
+  min-width: 0;
+}
+
+.side-h {
+  margin: 0 0 12px;
+  font-family: var(--serif);
+  font-size: 18px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.count {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.queue,
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.q-item {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.q-item + .q-item {
+  border-top: 1px solid var(--line);
+}
+
+.q-item img,
+.noart {
+  width: 64px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--r-s);
+  background: var(--surface-2);
+}
+
+.noart {
+  display: grid;
+  place-content: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.q-title {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.q-by {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.q-act {
+  display: flex;
+  gap: 4px;
+}
+
+.mini {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 8px;
+  background: transparent;
+  border-color: var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mini:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* タイムライン: ライナーノーツ風に、左に時刻、右に出来事 */
+.timeline {
+  max-height: 52vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.tl {
+  display: grid;
+  grid-template-columns: 3.6em minmax(0, 1fr);
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.tl-time {
+  font-family: var(--serif);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.tl.event .tl-text {
+  color: var(--muted);
+}
+
+.tl.played {
+  padding-top: 14px;
+}
+
+.tl.played .tl-text {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.tl.is-now .tl-time {
+  color: var(--lamp);
+  font-weight: 700;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-s);
+  font-size: 13px;
+}
+
+/* ---------- 狭い画面 ---------- */
+
+@media (max-width: 900px) {
+  .room {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
+    padding: 16px 16px 48px;
+  }
+
+  .timeline {
+    max-height: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .bar {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 8px 16px;
+  }
+
+  .presence {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .bar .ghost {
+    margin-left: auto;
+    padding: 0 12px;
+  }
+
+  .vol {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .controls > button {
+    flex: 1;
+  }
+
+  .add-row {
+    flex-direction: column;
+  }
+}
+
+/* 接続の様子 */
+.net summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.net-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.net-list li:not(.empty) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 5em;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.net-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.net-rtt {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.net-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}

@@ -38,51 +38,90 @@ const fmt = (sec: number) => {
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString('ja-JP', {hour: '2-digit', minute: '2-digit'})
 
-const newRoomId = () => {
-  const a = new Uint8Array(8)
+/*
+  招待コード: 読み間違えやすい 0/O、1/I/L を除いた31文字から8文字（約40ビット）。
+  部屋IDと暗号の合言葉を兼ねるので、身内以外には教えない前提。
+*/
+const CODE_CHARS = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'
+const CODE_LEN = 8
+
+const newCode = () => {
+  const a = new Uint32Array(CODE_LEN)
   crypto.getRandomValues(a)
-  return Array.from(a, b => (b % 36).toString(36)).join('')
+  return Array.from(a, n => CODE_CHARS[n % CODE_CHARS.length]).join('')
 }
 
-const roomFromHash = () => new URLSearchParams(location.hash.slice(1)).get('r')
+/** 小文字・ハイフン・空白は許す */
+const normalizeCode = (raw: string) => raw.toUpperCase().replace(/[^0-9A-Z]/g, '')
+
+const isValidCode = (c: string) => c.length === CODE_LEN && [...c].every(ch => CODE_CHARS.includes(ch))
+
+const showCode = (c: string) => `${c.slice(0, 4)}-${c.slice(4)}`
+
+const roomFromHash = () => {
+  const r = new URLSearchParams(location.hash.slice(1)).get('r')
+  return r ? normalizeCode(r) : null
+}
 
 /* ---------- 入口 ---------- */
 
 const renderEntry = () => {
-  const roomId = roomFromHash()
+  const fromLink = roomFromHash()
   app.innerHTML = `
     <section class="entry">
       <h1 class="wordmark">kitete jam</h1>
-      <p class="lede">${
-        roomId
-          ? '招待された部屋に入ります。名前を決めてください。'
-          : 'URLを知っている人だけが入れる、身内のリスニングルームです。'
-      }</p>
-      <form class="entry-form" id="entry">
+      <p class="lede">招待コードを知っている人だけが入れる、身内のリスニングルームです。</p>
+      <form class="entry-form" id="entry" novalidate>
         <label for="name">表示する名前</label>
-        <input id="name" name="name" required maxlength="20" autocomplete="nickname" placeholder="例: みかん" />
-        <button class="primary" type="submit">${roomId ? 'この部屋に入る' : '部屋をつくる'}</button>
+        <input id="name" name="name" maxlength="20" autocomplete="nickname" placeholder="例: みかん" />
+
+        <label for="code" class="gap">招待コード</label>
+        <input id="code" name="code" class="code-input" maxlength="12" autocomplete="off" autocapitalize="characters"
+          spellcheck="false" placeholder="XXXX-XXXX" />
+        <button class="primary" type="submit" value="join">この部屋に入る</button>
+
+        <p class="or">はじめて部屋を用意する人は</p>
+        <button class="ghost" type="submit" value="create">新しい部屋をつくる</button>
+        <p id="entry-msg" class="add-msg" data-tone="error" role="alert"></p>
       </form>
       <p class="fine">サーバーは使いません。曲はそれぞれの端末が YouTube と SoundCloud から直接読み込み、再生位置だけを P2P で揃えます。</p>
     </section>`
-  const input = app.querySelector<HTMLInputElement>('#name')!
-  input.value = store.get(NAME_KEY) ?? ''
-  input.focus()
+  const $in = (id: string) => app.querySelector<HTMLInputElement>(`#${id}`)!
+  const nameIn = $in('name')
+  const codeIn = $in('code')
+  const msg = app.querySelector<HTMLElement>('#entry-msg')!
+  nameIn.value = store.get(NAME_KEY) ?? ''
+  if (fromLink) codeIn.value = showCode(fromLink)
+  ;(nameIn.value ? codeIn : nameIn).focus()
+
   app.querySelector<HTMLFormElement>('#entry')!.addEventListener('submit', e => {
     e.preventDefault()
-    const name = input.value.trim()
-    if (!name) return
-    store.set(NAME_KEY, name)
-    let id = roomFromHash()
-    if (!id) {
-      id = newRoomId()
-      history.replaceState(null, '', `#r=${id}`)
+    const action = (e.submitter as HTMLButtonElement | null)?.value ?? 'join'
+    const name = nameIn.value.trim()
+    if (!name) {
+      msg.textContent = '名前を入れてください'
+      nameIn.focus()
+      return
     }
-    const btn = app.querySelector<HTMLButtonElement>('#entry button')!
-    btn.disabled = true
-    btn.textContent = '準備しています…'
+    let code: string
+    if (action === 'create') {
+      code = newCode()
+    } else {
+      code = normalizeCode(codeIn.value)
+      if (!isValidCode(code)) {
+        msg.textContent = codeIn.value.trim()
+          ? '招待コードは8文字です（例: 7KQM-X3PA）。もう一度確かめてください'
+          : '招待コードを入れてください。はじめての人は「新しい部屋をつくる」から'
+        codeIn.focus()
+        return
+      }
+    }
+    store.set(NAME_KEY, name)
+    history.replaceState(null, '', `#r=${code}`)
+    app.querySelectorAll<HTMLButtonElement>('#entry button').forEach(b => (b.disabled = true))
+    msg.textContent = ''
     // このクリックで自動再生が許可される。中継サーバーの情報を取ってから部屋に入る
-    void loadTurn().then(turn => enterRoom(id, name, turn))
+    void loadTurn().then(turn => enterRoom(code, name, turn))
   })
 }
 
@@ -93,7 +132,8 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     <header class="bar">
       <span class="wordmark small">kitete jam</span>
       <p class="presence" id="presence" aria-live="polite">部屋につないでいます…</p>
-      <button class="ghost" id="invite" type="button">招待リンクをコピー</button>
+      <p class="room-code">招待コード <strong>${showCode(roomId)}</strong></p>
+      <button class="ghost" id="invite" type="button">招待をコピー</button>
     </header>
 
     <div class="room">
@@ -156,7 +196,12 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
         </details>
       </aside>
     </div>
-    <p id="toast" class="toast" role="status" hidden></p>`
+    <p id="toast" class="toast" role="status" hidden></p>
+    <dialog id="invite-dlg" class="dlg" aria-labelledby="invite-h">
+      <h2 id="invite-h" class="side-h">これを身内に送ってください</h2>
+      <textarea id="invite-text" readonly rows="4"></textarea>
+      <form method="dialog"><button class="primary" type="submit">閉じる</button></form>
+    </dialog>`
 
   const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
   const els = {
@@ -373,12 +418,20 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     els.addMsg.textContent = `「${meta.title}」を入れました`
   })
 
+  const inviteText = `kitete jam で一緒に聴こう
+招待コード: ${showCode(roomId)}
+${location.origin}${location.pathname}#r=${roomId}`
   $('invite').addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(location.href)
-      toast('招待リンクをコピーしました。身内にだけ送ってください')
+      await navigator.clipboard.writeText(inviteText)
+      toast('招待コードとリンクをコピーしました。身内にだけ送ってください')
     } catch {
-      window.prompt('このリンクを送ってください', location.href)
+      // クリップボードが使えないブラウザでは、選択した状態で見せて手でコピーしてもらう
+      const dlg = $<HTMLDialogElement>('invite-dlg')
+      const ta = $<HTMLTextAreaElement>('invite-text')
+      ta.value = inviteText
+      dlg.showModal()
+      ta.select()
     }
   })
 
@@ -389,7 +442,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     const names = jam.names()
     els.presence.textContent = others
       ? `${names.length}人で聴いています: ${names.join('、')}`
-      : 'ほかに誰もいません。招待リンクを送ってください'
+      : 'ほかに誰もいません。招待コードを送ってください'
   }
   jam.room.onPeerJoin(renderPresence)
   jam.room.onPeerLeave(renderPresence)

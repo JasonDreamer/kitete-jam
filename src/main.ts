@@ -322,6 +322,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
   /* --- デバッグ表示（リリースまでは常に出す。#...&nodebug で消せる） --- */
   const NL = String.fromCharCode(10)
   const logLines: string[] = []
+  if (import.meta.env.DEV) Object.assign(window, {__kjLog: logLines})
   const t0 = performance.now()
   const debug = new URLSearchParams(location.hash.slice(1)).has('nodebug')
     ? null
@@ -558,11 +559,44 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       reloadSpotify()
     }, 500)
   }
+  // Spotify の埋め込みは試聴でも DRM（Widevine）で鳴らす。ブラウザで無効だと読み込み中のまま止まる。
+  // Firefox は初回に部品を落とすので、失敗しても少し待って確かめ直す
+  let drmOk: boolean | null = null
+  let drmCheckedAt = 0
+  const checkDrm = () => {
+    if (drmOk || Date.now() - drmCheckedAt < 10000) return
+    drmCheckedAt = Date.now()
+    if (!navigator.requestMediaKeySystemAccess) {
+      drmOk = false
+      return
+    }
+    navigator
+      .requestMediaKeySystemAccess('com.widevine.alpha', [
+        {audioCapabilities: [{contentType: 'audio/mp4; codecs="mp4a.40.2"'}]}
+      ])
+      .then(
+        () => {
+          if (drmOk === false) dlog('DRM: 使えるようになった')
+          drmOk = true
+        },
+        e => {
+          if (drmOk !== false) dlog(`DRM: 使えない (${e})`)
+          drmOk = false
+        }
+      )
+  }
+
   // Firefox 系（Zen・Floorp・LibreWolf など）はサードパーティ Cookie を隔離するので、
   // ログインしていても埋め込みに伝わらない。サイトごとにトラッキング防止を外せば届く
   const isFirefoxFamily = /Firefox\//.test(navigator.userAgent)
   const showPreviewNotice = () =>
-    isFirefoxFamily
+    drmOk === false
+      ? showNotice('最後まで流すには、ブラウザの設定で DRM 制御のコンテンツの再生を有効にしてください', '再読み込み', () => {
+          drmCheckedAt = 0
+          checkDrm()
+          reloadSpotify()
+        })
+      : isFirefoxFamily
       ? showNotice(
           'このブラウザでは試聴になります。アドレスバー左の盾アイコンから、このサイトのトラッキング防止をオフにしてください',
           '再読み込み',
@@ -611,8 +645,9 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     }
     els.dur.textContent = dur ? fmt(dur) : '--:--'
 
+    if (s.now.kind === 'sp') checkDrm()
     if (deck.autoplayBlocked) {
-      showNotice('ブラウザが自動再生を止めています。Spotify の再生ボタンを押してください', '', () => {})
+      showNotice('Spotify の再生が止まりました。Spotify の再生ボタンを押してください', '', () => {})
       return
     }
     if (deck.isPreview) showPreviewNotice()

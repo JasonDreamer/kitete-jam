@@ -14,6 +14,8 @@ export type PlayerEvents = {
   onEnded: (trackId: string) => void
   /** 自動再生が止められていた Spotify を、本人が埋め込みの再生ボタンで鳴らした */
   onUserStarted?: () => void
+  /** 次の曲の先読みが終わった */
+  onPreloaded?: (trackId: string) => void
   /** 本人が Spotify の埋め込みを直接操作した（シークバー・再生・一時停止） */
   onUserSeek?: (sec: number) => void
   onUserPause?: (sec: number) => void
@@ -86,6 +88,13 @@ export class Deck {
   private spKicks = 0
   private spReadyWaiter: (() => void) | null = null
   private spBlocked = false
+  /** 次の曲を先読みする予備の YouTube プレイヤー */
+  private ytSpare: any = null
+  private ytSpareHost: HTMLElement | null = null
+  private ytSpareMaking: Promise<any> | null = null
+  /** 予備で先読みが終わった曲と、先読み中の曲 */
+  private spareId: string | null = null
+  private spareLoadingId: string | null = null
   /** 先読み中なら、止めて戻す位置 */
   private preparing: {at: number} | null = null
   private prepareDone: (() => void) | null = null
@@ -129,18 +138,29 @@ export class Deck {
   }
 
   private initYt() {
-    return (this.ytReady ??= ensureYt().then(
+    return (this.ytReady ??= this.makeYt(this.hosts.yt).then(p => {
+      this.yt = p
+    }))
+  }
+
+  /**
+   * YouTube プレイヤーを1つ作る。表で鳴らす用と、次の曲を先読みする予備の2つを使うので、
+   * イベントはどちらのプレイヤーから来たかで振り分ける
+   */
+  private makeYt(host: HTMLElement) {
+    return ensureYt().then(
       () =>
-        new Promise<void>(resolve => {
+        new Promise<any>(resolve => {
           const el = document.createElement('div')
-          this.hosts.yt.append(el)
-          this.yt = new window.YT.Player(el, {
+          host.append(el)
+          const player = new window.YT.Player(el, {
             width: '100%',
             height: '100%',
             playerVars: {playsinline: 1, rel: 0, disablekb: 1, modestbranding: 1},
             events: {
-              onReady: () => resolve(),
-              onStateChange: (e: {data: number}) => {
+              onReady: () => resolve(player),
+              onStateChange: (e: {data: number; target: any}) => {
+                if (e.target !== this.yt) return this.onSpareState(e.target, e.data)
                 this.log(`← yt state ${e.data}`)
                 if (e.data === 0 && this.active === 'yt' && this.trackId) this.ev.onEnded(this.trackId)
                 if (e.data === 1 && this.preparing && this.active === 'yt') {
@@ -154,7 +174,13 @@ export class Deck {
                 }
                 if (e.data === 1) this.loading = false
               },
-              onError: (e: {data: number}) => {
+              onError: (e: {data: number; target: any}) => {
+                if (e.target !== this.yt) {
+                  // 予備で読めなかった曲は、表に出す時にふつうに読み込んでエラーを出す
+                  this.spareId = null
+                  this.spareLoadingId = null
+                  return
+                }
                 if (this.active !== 'yt' || !this.trackId) return
                 const reason =
                   e.data === 101 || e.data === 150
@@ -167,7 +193,58 @@ export class Deck {
             }
           })
         })
-    ))
+    )
+  }
+
+  /** 予備プレイヤーが鳴り始めたら、止めて先頭に戻す。これで先頭まで読み込まれた状態になる */
+  private onSpareState(player: any, state: number) {
+    if (player !== this.ytSpare || state !== 1 || !this.spareLoadingId) return
+    player.pauseVideo()
+    player.seekTo(0, true)
+    this.spareId = this.spareLoadingId
+    this.spareLoadingId = null
+    this.log('  次の曲の先読みが終わった')
+    this.ev.onPreloaded?.(this.spareId)
+  }
+
+  /**
+   * 次の曲を裏で先読みしておく（YouTube だけ）。
+   * SoundCloud は同じブラウザで1つしか鳴らず、Spotify はアカウントで1つしか鳴らないので、
+   * 裏で鳴らすと表の曲が止まってしまう
+   */
+  async preloadNext(track: Track | undefined) {
+    if (!track || track.kind !== 'yt') return
+    if (this.spareId === track.id || this.spareLoadingId === track.id) return
+    // 予備を作っている間に何度呼ばれても、作るのは1つだけ
+    this.spareId = null
+    this.spareLoadingId = track.id
+    if (!this.ytSpare) {
+      this.ytSpareHost ??= Object.assign(document.createElement('div'), {className: 'embed spare'})
+      this.hosts.yt.parentElement?.append(this.ytSpareHost)
+      this.ytSpareMaking ??= this.makeYt(this.ytSpareHost)
+      this.ytSpare = await this.ytSpareMaking
+      if (this.spareLoadingId !== track.id) return
+    }
+    this.ytSpare.mute()
+    this.ytSpare.loadVideoById({videoId: track.ref, startSeconds: 0})
+    this.log(`  次の曲を先読み: ${track.title.slice(0, 20)}`)
+  }
+
+  /** 先読み済みの予備プレイヤーを表に出し、今のプレイヤーを予備に回す */
+  private swapToSpare() {
+    const old = this.yt
+    const oldHost = this.hosts.yt
+    this.yt = this.ytSpare
+    this.hosts.yt = this.ytSpareHost!
+    this.ytSpare = old
+    this.ytSpareHost = oldHost
+    this.hosts.yt.classList.remove('spare')
+    this.ytSpareHost.classList.add('spare')
+    this.ytSpareHost.hidden = false
+    old?.stopVideo?.()
+    old?.mute?.()
+    this.spareId = null
+    this.log('  先読みしておいた曲に切り替えた')
   }
 
   private initSc(firstUrl: string) {
@@ -317,6 +394,11 @@ export class Deck {
     for (const k of Object.keys(this.hosts) as Kind[]) this.hosts[k].hidden = k !== kind
   }
 
+  /** 先読み済みの曲か */
+  isPreloaded(trackId: string) {
+    return this.spareId === trackId
+  }
+
   /**
    * 曲を読み込む。
    * - play: すぐ鳴らす（途中から入った時）
@@ -343,6 +425,19 @@ export class Deck {
     if (track.kind === 'yt') {
       await this.initYt()
       if (this.trackId !== track.id) return
+      if (this.ytSpare && this.spareId === track.id) {
+        // 先読み済み。入れ替えるだけで、すぐ鳴らせる
+        this.swapToSpare()
+        this.show('yt')
+        this.yt.unMute()
+        this.yt.setVolume(this.volume)
+        this.yt.seekTo(startSec, true)
+        if (playing) this.yt.playVideo()
+        this.loading = false
+        this.finishLoad()
+        await done
+        return
+      }
       this.yt.setVolume(this.volume)
       if (prepare) {
         // 消音で鳴らし始め、鳴った瞬間に止めて先頭に戻す（onStateChange 側）

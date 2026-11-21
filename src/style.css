@@ -396,6 +396,17 @@ body.in-room {
   border: 0;
 }
 
+/* 次の曲を先読みする予備のプレイヤー。読み込みは続けたまま、表のプレイヤーの後ろに隠す */
+.embed {
+  z-index: 1;
+}
+
+.embed.spare {
+  z-index: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .media-empty {
   height: 100%;
   display: grid;

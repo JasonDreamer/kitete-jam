@@ -291,6 +291,11 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
         dlog(`部屋の位置へ合わせる: seek ${want.toFixed(2)}`)
         deck.seek(want)
       },
+      onPreloaded: trackId => {
+        // 次の曲の準備は先に済んだと知らせておく。曲が変わった瞬間に全員そろう
+        dlog('次の曲の準備できた（先読み）')
+        jam.markReady(trackId)
+      },
       onUserSeek: sec => {
         dlog(`部屋へ反映: シーク ${sec.toFixed(2)}`)
         void jam.seek(sec)
@@ -616,6 +621,8 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       return
     }
     const now = Date.now()
+    // 鳴り始めて少したったら、次の曲を裏で先読みしておく（鳴り始めの読み込みと取り合わないように）
+    if (deck.playingFor > 5) void deck.preloadNext(s.queue[0])
     // 試聴の範囲を過ぎた位置には合わせられない
     const reachable = !deck.isPreview || want < deck.duration()
     const drift = Math.abs(deck.time() - want)

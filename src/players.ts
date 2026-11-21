@@ -44,6 +44,8 @@ const ensureSp = () =>
     loadScript('https://open.spotify.com/embed/iframe-api/v1').catch(reject)
   }))
 
+const SP_STALE_MS = 3000
+
 /** Spotify の埋め込みは未ログインだと30秒以内の試聴になる */
 const PREVIEW_MAX_SEC = 31
 
@@ -73,6 +75,7 @@ export class Deck {
   private spSeekAt = 0
   private spSeekPlaying = false
   private spRetries = 0
+  private startedAt = 0
   private spEndedFor: string | null = null
 
   private active: Kind | null = null
@@ -206,8 +209,27 @@ export class Deck {
     for (const k of Object.keys(this.hosts) as Kind[]) this.hosts[k].hidden = k !== kind
   }
 
-  async load(track: Track, startSec: number, playing: boolean) {
+  /**
+   * 曲を読み込む。delayMs が正なら、読み込んで待ち、その時間が来たら鳴らす
+   * （新しい曲は全員で同じ時刻に始めるため）
+   */
+  async load(track: Track, startSec: number, playing: boolean, delayMs = 0) {
+    const scheduled = playing && delayMs > 0
+    if (scheduled) {
+      const at = performance.now() + delayMs
+      await this.loadNow(track, startSec, false)
+      const wait = at - performance.now()
+      setTimeout(() => {
+        if (this.trackId === track.id) this.play()
+      }, Math.max(0, wait))
+      return
+    }
+    await this.loadNow(track, startSec, playing)
+  }
+
+  private async loadNow(track: Track, startSec: number, playing: boolean) {
     this.trackId = track.id
+    this.startedAt = 0
     this.loading = true
     this.pauseOther(track.kind)
     this.active = track.kind
@@ -254,12 +276,15 @@ export class Deck {
    * 公式の loadEntity は startAt（秒）を受け取り、play した時にそこから始まる
    */
   private startSpAt(sec: number, playing: boolean) {
-    // 秒単位でしか指定できず、読み込みにも少しかかるので、切り捨てずに少し先を指定する
-    const at = Math.max(0, Math.round(sec + 0.5))
+    // 秒単位でしか指定できない。すぐ鳴らす時は読み込みにかかる分だけ少し先を指定し、
+    // 予約して待つ時はその位置ちょうどにする
+    const at = Math.max(0, playing ? Math.round(sec + 0.5) : Math.floor(sec))
     if (typeof this.sp.loadEntity === 'function') this.sp.loadEntity(this.spUri, false, at)
     else this.sp.loadUri(this.spUri)
+    // 実際の位置は埋め込みから返ってくるまで分からないので、仮の値で「再生中」にはしない
     this.spPos = at
     this.spPosAt = performance.now()
+    this.spPlaying = false
     if (playing) {
       this.sp.play()
       this.spSeekTarget = at
@@ -272,16 +297,17 @@ export class Deck {
 
   /**
    * シークが効いたかを、埋め込みから返ってくる実際の位置で確かめる。
-   * 3秒たってもずれていたら、位置を指定して読み込み直す（2回まで）
+   * 3秒たってもずれていたら、位置を指定して読み込み直す（1曲につき1回まで。
+   * 何度も読み込み直すと埋め込みが固まるので、それ以上は「合流する」ボタンに任せる）
    */
   private verifySpSeek() {
     if (this.spSeekTarget == null || !this.sp) return
     const since = (performance.now() - this.spSeekAt) / 1000
     if (since < 3) return
     const want = this.spSeekTarget + (this.spSeekPlaying ? since : 0)
-    const actual = this.spPos + (this.spPlaying ? (performance.now() - this.spPosAt) / 1000 : 0)
+    const actual = this.spNow()
     this.spSeekTarget = null
-    if (Math.abs(actual - want) > 2.5 && this.spRetries < 2) {
+    if (Math.abs(actual - want) > 2.5 && this.spRetries < 1) {
       this.spRetries++
       this.startSpAt(want, this.spSeekPlaying)
     }
@@ -360,9 +386,8 @@ export class Deck {
     if (this.active === 'yt') return this.yt?.getCurrentTime?.() ?? 0
     if (this.active === 'sc') return this.scPos
     if (this.active === 'sp') {
-      // playback_update は間隔があくので、再生中は経過時間で補う
       this.verifySpSeek()
-      const t = this.spPos + (this.spPlaying ? (performance.now() - this.spPosAt) / 1000 : 0)
+      const t = this.spNow()
       return this.spDur ? Math.min(t, this.spDur) : t
     }
     return 0
@@ -377,14 +402,51 @@ export class Deck {
 
   /** 位置合わせの許容差。Spotify は秒単位でしか seek できない */
   get tolerance() {
-    return this.active === 'sp' ? 1.5 : 0.8
+    return this.active === 'sp' ? 2 : 0.8
+  }
+
+  /** 位置合わせをしてよい最短の間隔（ms）。Spotify は操作を重ねると固まるので長めに */
+  get correctionInterval() {
+    return this.active === 'sp' ? 8000 : 2000
   }
 
   /** 実際に音が出ているか（自動再生ブロックの検出用） */
   isPlaying(): boolean {
     if (this.active === 'yt') return this.yt?.getPlayerState?.() === 1
     if (this.active === 'sc') return this.scPlaying
-    if (this.active === 'sp') return this.spPlaying
+    if (this.active === 'sp') return this.spPlaying && !this.spStale()
     return false
+  }
+
+  /** 再生中の Spotify は約1秒ごとに位置を返す。3秒以上来なければ埋め込みが止まっている */
+  private spStale() {
+    return performance.now() - this.spPosAt > SP_STALE_MS
+  }
+
+  /** 最後に返ってきた位置から、止まっていなければ経過時間を足す（足すのは最大3秒まで） */
+  private spNow() {
+    if (!this.spPlaying) return this.spPos
+    return this.spPos + Math.min(performance.now() - this.spPosAt, SP_STALE_MS) / 1000
+  }
+
+  /**
+   * 「合流する」ボタンから呼ぶ。クリックの中で呼ぶので自動再生の制限にかからない。
+   * Spotify は位置を指定して読み込み直し、ほかは再生して位置を合わせる
+   */
+  rejoin(sec: number) {
+    if (this.active === 'sp' && this.sp) {
+      this.spRetries = 0
+      this.startSpAt(sec, true)
+      return
+    }
+    this.play()
+    this.seek(sec)
+  }
+
+  /** 再生が始まってからの経過秒（始まっていなければ 0） */
+  get playingFor() {
+    if (!this.isPlaying()) return 0
+    if (!this.startedAt) this.startedAt = performance.now()
+    return (performance.now() - this.startedAt) / 1000
   }
 }

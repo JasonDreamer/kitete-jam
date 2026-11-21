@@ -15,6 +15,7 @@ export type JamState = {
 
 const EMPTY: JamState = {now: null, play: {playing: false, pos: 0, at: 0}, queue: [], log: []}
 const LOG_MAX = 60
+const START_DELAY_MS = 2000
 
 /** Spotify の試聴（30秒）が終わったことを知らせる時の印 */
 export const PREVIEW_ENDED = 'preview-ended'
@@ -82,6 +83,23 @@ export class Jam {
   }
 
   /** いま何秒の位置にいるべきか */
+  /** 曲の開始が予約されている時、開始までの残り ms（予約がなければ 0） */
+  startDelay(s: JamState = this.state.get()): number {
+    if (!s.play.playing) return 0
+    return Math.max(0, s.play.at - this.authorOffset() - Date.now())
+  }
+
+  /**
+   * 再生位置を自分の時計で書き直す。
+   * 開始が予約されている間は、予約時刻を残したまま自分の時計に直す
+   */
+  private rebase(s: JamState): Play {
+    const p = s.play
+    const atLocal = p.at - this.authorOffset()
+    if (p.playing && atLocal > Date.now()) return {...p, at: atLocal}
+    return {...p, pos: this.expectedPos(s), at: Date.now()}
+  }
+
   expectedPos(s: JamState = this.state.get()): number {
     const p = s.play
     if (!p.playing) return p.pos
@@ -160,7 +178,7 @@ export class Jam {
     return this.state.set(prev => {
       const base: JamState = {
         ...prev,
-        play: {...prev.play, pos: this.expectedPos(prev), at: Date.now()}
+        play: this.rebase(prev)
       }
       const out = fn(base)
       return out === base ? prev : out
@@ -176,7 +194,8 @@ export class Jam {
       ...s,
       now: t,
       queue,
-      play: {playing: true, pos: 0, at: Date.now()},
+      // 各端末が読み込み終わるまで待ってから全員で同時に始める
+      play: {playing: true, pos: 0, at: Date.now() + START_DELAY_MS},
       log: [
         ...(note ? this.log(s, note) : s.log),
         {at: Date.now(), text: t.title, trackId: t.id, kind: 'played' as const}

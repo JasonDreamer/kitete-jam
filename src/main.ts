@@ -330,6 +330,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
   /* --- 状態を画面と再生に反映 --- */
 
   let seeking = false
+  let lastCorrection = 0
   let seenLog = -1
 
   const apply = (s: JamState) => {
@@ -337,11 +338,16 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     if (!t) {
       if (deck.currentId) deck.clear()
     } else if (deck.currentId !== t.id) {
-      void deck.load(t, jam.expectedPos(s), s.play.playing)
+      void deck.load(t, jam.expectedPos(s), s.play.playing, jam.startDelay(s))
+    } else if (s.play.playing && jam.startDelay(s) > 0) {
+      // 開始の予約待ち。時刻が来たら deck が鳴らす
     } else if (s.play.playing) {
       deck.play()
       const want = jam.expectedPos(s)
-      if (Math.abs(deck.time() - want) > deck.tolerance) deck.seek(want)
+      if (!deck.loading && Math.abs(deck.time() - want) > deck.tolerance) {
+        lastCorrection = Date.now()
+        deck.seek(want)
+      }
     } else {
       deck.pause()
       deck.seek(s.play.pos)
@@ -487,8 +493,9 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       : showNotice('Spotify が試聴（30秒）になっています', 'ログインして再読み込み', loginSpotify)
 
   /* --- 0.25 秒ごとに位置表示と同期補正 --- */
-  let lastCorrection = 0
   let lastResume = 0
+  /** 再生（または開始の予約時刻）がいつ始まったか。自分の時計で */
+  const lastStart = (s: JamState) => s.play.at - jam.authorOffset()
   // URL に &debug を付けた時だけ、実際の再生位置と本来の位置を数値で出す（ずれの調査用）
   const debugBox = new URLSearchParams(location.hash.slice(1)).has('debug')
     ? document.body.appendChild(Object.assign(document.createElement('pre'), {className: 'debug'}))
@@ -525,28 +532,35 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     els.dur.textContent = dur ? fmt(dur) : '--:--'
 
     if (deck.isPreview) showPreviewNotice()
-    if (!s.play.playing || deck.loading || deck.currentId !== s.now.id) {
+    if (!s.play.playing || deck.loading || deck.currentId !== s.now.id || jam.startDelay(s) > 0) {
       if (!deck.isPreview) els.notice.hidden = true
       return
     }
     const now = Date.now()
     // 試聴の範囲を過ぎた位置には合わせられない
     const reachable = !deck.isPreview || want < deck.duration()
-    if (reachable && now - lastCorrection > 2000 && Math.abs(deck.time() - want) > deck.tolerance) {
+    const drift = Math.abs(deck.time() - want)
+    // 鳴り始めの数秒は位置が安定しないので、大きくずれた時だけ直す
+    const settling = deck.playingFor < 3 && drift < 3
+    if (
+      reachable &&
+      !settling &&
+      deck.isPlaying() &&
+      now - lastCorrection > deck.correctionInterval &&
+      drift > deck.tolerance
+    ) {
       lastCorrection = now
       deck.seek(want)
     }
-    // 広告やバッファで止まったままなら再開を試みる
-    const stalled = !deck.isPlaying() && now - s.play.at > 4000 && !deck.isPreview
-    if (stalled && now - lastResume > 5000) {
+    // 広告やバッファで止まったままなら再開を試みる。
+    // Spotify は再開を重ねると最初からになったり固まったりするので、ボタンに任せる
+    const stalled = !deck.isPlaying() && Date.now() - lastStart(s) > 4000 && !deck.isPreview
+    if (stalled && deck.kind !== 'sp' && now - lastResume > 5000) {
       lastResume = now
       deck.play()
     }
     if (stalled) {
-      showNotice('この端末だけ止まっています', '合流する', () => {
-        deck.play()
-        deck.seek(jam.expectedPos())
-      })
+      showNotice('この端末だけ止まっています', '合流する', () => deck.rejoin(jam.expectedPos()))
     } else if (!deck.isPreview) els.notice.hidden = true
     // 終了イベントを取りこぼしたときの保険
     if (dur && want > dur + 3 && jam.isLeader()) void jam.next(s.now.id, null)

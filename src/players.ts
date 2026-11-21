@@ -67,8 +67,12 @@ export class Deck {
   private spPosAt = 0
   private spDur = 0
   private spPlaying = false
-  private spStartAt = 0
-  private spPendingPlay = false
+  private spUri = ''
+  /** 送ったシークが本当に効いたか確かめるための目標位置と、送った時刻 */
+  private spSeekTarget: number | null = null
+  private spSeekAt = 0
+  private spSeekPlaying = false
+  private spRetries = 0
   private spEndedFor: string | null = null
 
   private active: Kind | null = null
@@ -234,27 +238,52 @@ export class Deck {
       if (fresh) after()
       else this.sc.load(track.ref, {auto_play: false, visual: true, show_comments: false, hide_related: true, callback: after})
     } else {
-      const fresh = !this.spReady
       this.spDur = 0
       this.spPos = startSec
       this.spPosAt = performance.now()
       await this.initSp(track.ref)
       if (this.trackId !== track.id) return
-      if (!fresh) this.sp.loadUri(track.ref)
-      this.spStartAt = startSec
-      if (playing) {
-        this.sp.play()
-        // 読み込み直後は seek が効かないことがあるので、再生が始まってから位置を合わせる
-        this.spPendingPlay = true
-        setTimeout(() => {
-          if (this.trackId === track.id && this.spPendingPlay) {
-            this.spPendingPlay = false
-            this.sp.seek(this.spStartAt)
-          }
-        }, 1200)
-      } else {
-        this.loading = false
-      }
+      this.spUri = track.ref
+      this.spRetries = 0
+      this.startSpAt(startSec, playing)
+    }
+  }
+
+  /**
+   * 位置を指定して Spotify の曲を読み込む。
+   * 公式の loadEntity は startAt（秒）を受け取り、play した時にそこから始まる
+   */
+  private startSpAt(sec: number, playing: boolean) {
+    // 秒単位でしか指定できず、読み込みにも少しかかるので、切り捨てずに少し先を指定する
+    const at = Math.max(0, Math.round(sec + 0.5))
+    if (typeof this.sp.loadEntity === 'function') this.sp.loadEntity(this.spUri, false, at)
+    else this.sp.loadUri(this.spUri)
+    this.spPos = at
+    this.spPosAt = performance.now()
+    if (playing) {
+      this.sp.play()
+      this.spSeekTarget = at
+      this.spSeekAt = performance.now()
+      this.spSeekPlaying = true
+    } else {
+      this.loading = false
+    }
+  }
+
+  /**
+   * シークが効いたかを、埋め込みから返ってくる実際の位置で確かめる。
+   * 3秒たってもずれていたら、位置を指定して読み込み直す（2回まで）
+   */
+  private verifySpSeek() {
+    if (this.spSeekTarget == null || !this.sp) return
+    const since = (performance.now() - this.spSeekAt) / 1000
+    if (since < 3) return
+    const want = this.spSeekTarget + (this.spSeekPlaying ? since : 0)
+    const actual = this.spPos + (this.spPlaying ? (performance.now() - this.spPosAt) / 1000 : 0)
+    this.spSeekTarget = null
+    if (Math.abs(actual - want) > 2.5 && this.spRetries < 2) {
+      this.spRetries++
+      this.startSpAt(want, this.spSeekPlaying)
     }
   }
 
@@ -273,6 +302,7 @@ export class Deck {
     this.spPlaying = false
     this.spDur = 0
     this.spEndedFor = null
+    this.spSeekTarget = null
     this.hosts.sp.replaceChildren()
   }
 
@@ -309,10 +339,13 @@ export class Deck {
       this.scPos = sec
       this.sc?.seekTo(sec * 1000)
     }
-    if (this.active === 'sp') {
-      this.spPos = sec
-      this.spPosAt = performance.now()
-      this.sp?.seek(Math.round(sec))
+    if (this.active === 'sp' && this.sp) {
+      // 確かめている最中は重ねて送らない
+      if (this.spSeekTarget != null) return
+      this.sp.seek(Math.round(sec))
+      this.spSeekTarget = sec
+      this.spSeekAt = performance.now()
+      this.spSeekPlaying = this.spPlaying
     }
   }
 
@@ -328,6 +361,7 @@ export class Deck {
     if (this.active === 'sc') return this.scPos
     if (this.active === 'sp') {
       // playback_update は間隔があくので、再生中は経過時間で補う
+      this.verifySpSeek()
       const t = this.spPos + (this.spPlaying ? (performance.now() - this.spPosAt) / 1000 : 0)
       return this.spDur ? Math.min(t, this.spDur) : t
     }

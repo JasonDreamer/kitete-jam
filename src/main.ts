@@ -36,7 +36,6 @@ const fmt = (sec: number) => {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-const clock = (ms: number) => new Date(ms).toLocaleTimeString('ja-JP', {hour: '2-digit', minute: '2-digit'})
 
 const SOURCE: Record<Kind, string> = {yt: 'YouTube', sc: 'SoundCloud', sp: 'Spotify'}
 
@@ -129,7 +128,8 @@ const renderEntry = () => {
       }
     }
     store.set(NAME_KEY, name)
-    history.replaceState(null, '', `#r=${code}`)
+    const debug = new URLSearchParams(location.hash.slice(1)).has('debug')
+    history.replaceState(null, '', `#r=${code}${debug ? '&debug' : ''}`)
     app.querySelectorAll<HTMLButtonElement>('#entry button').forEach(b => (b.disabled = true))
     msg.textContent = ''
     // このクリックで自動再生が許可される。中継サーバーの情報を取ってから部屋に入る
@@ -420,7 +420,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
             <p class="row-title">${esc(e.text)}</p>
             <p class="row-sub">${esc([t?.artist, t ? `${t.addedBy}さん` : ''].filter(Boolean).join(' · '))}</p>
           </div>
-          <time class="row-time">${isNow ? '再生中' : clock(e.at)}</time>
+          ${isNow ? '<span class="row-time">再生中</span>' : '<span></span>'}
         </li>`
       })
       .join('')
@@ -489,6 +489,10 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
   /* --- 0.25 秒ごとに位置表示と同期補正 --- */
   let lastCorrection = 0
   let lastResume = 0
+  // URL に &debug を付けた時だけ、実際の再生位置と本来の位置を数値で出す（ずれの調査用）
+  const debugBox = new URLSearchParams(location.hash.slice(1)).has('debug')
+    ? document.body.appendChild(Object.assign(document.createElement('pre'), {className: 'debug'}))
+    : null
   setInterval(() => {
     const s = jam.state.get()
     if (!s.now) {
@@ -501,6 +505,14 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     // Spotify の埋め込みは外から音量を変えられない
     els.vol.disabled = !deck.canSetVolume
     const want = jam.expectedPos(s)
+    if (debugBox) {
+      const actual = deck.time()
+      debugBox.textContent = [
+        `種類 ${deck.kind ?? '-'}  再生中 ${deck.isPlaying()}  試聴 ${deck.isPreview}`,
+        `実際 ${actual.toFixed(2)}  本来 ${want.toFixed(2)}  差 ${(actual - want).toFixed(2)}`,
+        `長さ ${deck.duration().toFixed(1)}  読込中 ${deck.loading}`
+      ].join('\n')
+    }
     // 試聴中の長さ（30秒）は曲の本当の長さではないので出さない
     const dur = deck.isPreview ? 0 : deck.duration() || 0
     const shown = Math.min(want, dur || want)

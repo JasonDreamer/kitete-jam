@@ -86,6 +86,11 @@ export class Deck {
   private spKicks = 0
   private spReadyWaiter: (() => void) | null = null
   private spBlocked = false
+  /** 先読み中なら、止めて戻す位置 */
+  private preparing: {at: number} | null = null
+  private prepareDone: (() => void) | null = null
+  /** 開始の予約時刻（performance.now 基準）。0 なら予約なし */
+  private scheduledAt = 0
   private spPaused = true
   /** こちらから Spotify に最後に操作を送った時刻 */
   private spOurAt = 0
@@ -138,6 +143,15 @@ export class Deck {
               onStateChange: (e: {data: number}) => {
                 this.log(`← yt state ${e.data}`)
                 if (e.data === 0 && this.active === 'yt' && this.trackId) this.ev.onEnded(this.trackId)
+                if (e.data === 1 && this.preparing && this.active === 'yt') {
+                  // 先読みで鳴り始めた。止めて先頭に戻し、音を戻す
+                  this.yt.pauseVideo()
+                  this.yt.seekTo(this.preparing.at, true)
+                  this.yt.unMute()
+                  this.loading = false
+                  this.finishLoad()
+                  return
+                }
                 if (e.data === 1) this.loading = false
               },
               onError: (e: {data: number}) => {
@@ -172,6 +186,16 @@ export class Deck {
             this.scPos = e.currentPosition / 1000
           })
           this.sc.bind(W.Events.PLAY, () => {
+            if (this.preparing && this.active === 'sc') {
+              // 先読みで鳴り始めた。止めて先頭に戻し、音量を戻す
+              this.sc.pause()
+              this.sc.seekTo(this.preparing.at * 1000)
+              this.scPos = this.preparing.at
+              this.sc.setVolume(this.volume)
+              this.loading = false
+              this.finishLoad()
+              return
+            }
             this.loading = false
             this.scPlaying = true
           })
@@ -294,39 +318,44 @@ export class Deck {
   }
 
   /**
-   * 曲を読み込む。delayMs が正なら、読み込んで待ち、その時間が来たら鳴らす
-   * （新しい曲は全員で同じ時刻に始めるため）
+   * 曲を読み込む。
+   * - play: すぐ鳴らす（途中から入った時）
+   * - pause: 止めた状態で読み込む
+   * - prepare: 先頭まで読み込んで止めて待つ（新しい曲を全員で同時に始めるため）
+   * 鳴らせる状態になったら解決する
    */
-  async load(track: Track, startSec: number, playing: boolean, delayMs = 0) {
-    const scheduled = playing && delayMs > 0
-    if (scheduled) {
-      const at = performance.now() + delayMs
-      await this.loadNow(track, startSec, false)
-      const wait = at - performance.now()
-      setTimeout(() => {
-        if (this.trackId === track.id) this.play()
-      }, Math.max(0, wait))
-      return
-    }
-    await this.loadNow(track, startSec, playing)
-  }
-
-  private async loadNow(track: Track, startSec: number, playing: boolean) {
+  async load(track: Track, startSec: number, mode: 'play' | 'pause' | 'prepare') {
     this.trackId = track.id
     this.startedAt = 0
     this.loading = true
+    this.scheduledAt = 0
     this.pauseOther(track.kind)
     this.active = track.kind
     this.show(track.kind)
+    const playing = mode === 'play'
+    const prepare = mode === 'prepare'
+    // 読み込みが極端に遅くても、ほかの人を待たせ続けないように8秒で打ち切る
+    const done = new Promise<void>(resolve => {
+      this.prepareDone = resolve
+      setTimeout(resolve, 8000)
+    })
 
     if (track.kind === 'yt') {
       await this.initYt()
       if (this.trackId !== track.id) return
       this.yt.setVolume(this.volume)
-      if (playing) this.yt.loadVideoById({videoId: track.ref, startSeconds: startSec})
-      else {
+      if (prepare) {
+        // 消音で鳴らし始め、鳴った瞬間に止めて先頭に戻す（onStateChange 側）
+        this.preparing = {at: startSec}
+        this.yt.mute()
+        this.yt.loadVideoById({videoId: track.ref, startSeconds: startSec})
+      } else if (playing) {
+        this.yt.loadVideoById({videoId: track.ref, startSeconds: startSec})
+        this.finishLoad()
+      } else {
         this.yt.cueVideoById({videoId: track.ref, startSeconds: startSec})
         this.loading = false
+        this.finishLoad()
       }
     } else if (track.kind === 'sc') {
       const fresh = !this.scReady
@@ -334,12 +363,20 @@ export class Deck {
       if (this.trackId !== track.id) return
       const after = () => {
         if (this.trackId !== track.id) return
-        this.sc.setVolume(this.volume)
         this.sc.getDuration((ms: number) => (this.scDur = ms / 1000))
         this.scPos = startSec
         this.sc.seekTo(startSec * 1000)
+        if (prepare) {
+          // 音量0で鳴らし始め、鳴った瞬間に止めて先頭に戻す（PLAY イベント側）
+          this.preparing = {at: startSec}
+          this.sc.setVolume(0)
+          this.sc.play()
+          return
+        }
+        this.sc.setVolume(this.volume)
         if (playing) this.sc.play()
         else this.loading = false
+        this.finishLoad()
       }
       if (fresh) after()
       else this.sc.load(track.ref, {auto_play: false, visual: true, show_comments: false, hide_related: true, callback: after})
@@ -351,8 +388,52 @@ export class Deck {
       if (this.trackId !== track.id) return
       this.spUri = track.ref
       this.spRetries = 0
-      this.startSpAt(startSec, playing)
+      if (prepare) {
+        // Spotify は先に鳴らしておけないので、読み込み直した後の ready を待つ
+        this.startSpAt(startSec, false)
+        this.loading = true
+        const finish = () => {
+          if (this.spReadyWaiter === finish) this.spReadyWaiter = null
+          this.loading = false
+          this.finishLoad()
+        }
+        this.spReadyWaiter = finish
+        setTimeout(() => this.spReadyWaiter === finish && finish(), 2000)
+      } else {
+        this.startSpAt(startSec, playing)
+        this.finishLoad()
+      }
     }
+    await done
+  }
+
+  /** 先読みが終わった。開始の予約がもう来ていれば鳴らす */
+  private finishLoad() {
+    this.preparing = null
+    const resolve = this.prepareDone
+    this.prepareDone = null
+    resolve?.()
+    if (this.scheduledAt && performance.now() >= this.scheduledAt) {
+      this.scheduledAt = 0
+      this.play()
+    }
+  }
+
+  /**
+   * delayMs 後に鳴らす。同じ時刻の予約が何度来ても1回だけ。
+   * 先読み中に時刻が来たら、先読みが終わった時点で鳴らす
+   */
+  scheduleStart(delayMs: number) {
+    const at = performance.now() + delayMs
+    if (this.scheduledAt && Math.abs(this.scheduledAt - at) < 100) return
+    this.scheduledAt = at
+    const id = this.trackId
+    setTimeout(() => {
+      if (this.trackId !== id || this.scheduledAt !== at) return
+      if (this.preparing || this.loading) return // finishLoad で鳴らす
+      this.scheduledAt = 0
+      this.play()
+    }, Math.max(0, delayMs))
   }
 
   /**
@@ -444,6 +525,8 @@ export class Deck {
 
   clear() {
     this.trackId = null
+    this.preparing = null
+    this.scheduledAt = 0
     this.yt?.stopVideo?.()
     this.sc?.pause()
     if (this.sp && this.spPlaying) this.sp.pause()

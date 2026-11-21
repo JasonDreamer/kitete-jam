@@ -1,8 +1,11 @@
 import {joinRoom, type TurnServerConfig} from 'trystero'
 import type {Track} from './sources'
 
-/** 再生位置は「書いた人の時計で at の瞬間に pos 秒」で持つ */
-export type Play = {playing: boolean; pos: number; at: number}
+/**
+ * 再生位置は「書いた人の時計で at の瞬間に pos 秒」で持つ。
+ * pending の間は新しい曲の準備中で、位置は pos のまま進まない（at は準備を始めた時刻）
+ */
+export type Play = {playing: boolean; pos: number; at: number; pending?: boolean}
 
 export type LogEntry = {at: number; text: string; trackId?: string; kind: 'played' | 'event'}
 
@@ -15,7 +18,10 @@ export type JamState = {
 
 const EMPTY: JamState = {now: null, play: {playing: false, pos: 0, at: 0}, queue: [], log: []}
 const LOG_MAX = 60
-const START_DELAY_MS = 2000
+/** 全員の準備がそろってから鳴らし始めるまでの間（予約が全員に届くのを待つ分） */
+const RELEASE_DELAY_MS = 700
+/** 準備が終わらない人がいても、これだけ待ったら始める */
+const PREPARE_TIMEOUT_MS = 8000
 
 /** Spotify の試聴（30秒）が終わったことを知らせる時の印 */
 export const PREVIEW_ENDED = 'preview-ended'
@@ -28,6 +34,8 @@ export class Jam {
   readonly room
   readonly state
   readonly profile
+  /** 各自が「この曲の準備ができた」を知らせる */
+  readonly ready
   private clock
   private cantPlay
   /** trackId ごとに「再生できなかった」と言ってきた peerId */
@@ -47,6 +55,11 @@ export class Jam {
     )
     this.state = this.room.makeState<JamState>('jam', EMPTY, {maxBytes: 65536})
     this.profile = this.room.makeUserState<{name: string}>('profile', {name: ''})
+    this.ready = this.room.makeUserState<{trackId: string}>('ready', {trackId: ''})
+    // 全員の準備がそろったら開始する。そろわなくても時間切れで開始する
+    this.ready.onChange(() => this.tryRelease())
+    this.state.onChange(() => this.tryRelease())
+    setInterval(() => this.tryRelease(), 1000)
     this.clock = this.room.makeAction<number, number>('clock', {kind: 'request'})
     this.clock.onRequest(() => Date.now())
     this.cantPlay = this.room.makeAction<{trackId: string; reason: string}>('cant-play')
@@ -82,10 +95,41 @@ export class Jam {
     return this.offsets.get(meta.peerId)?.offset ?? 0
   }
 
-  /** いま何秒の位置にいるべきか */
+  /** 新しい曲の準備中か */
+  isPending(s: JamState = this.state.get()): boolean {
+    return !!(s.now && s.play.playing && s.play.pending)
+  }
+
+  /** この曲の準備ができたことを知らせる */
+  markReady(trackId: string) {
+    void this.ready.set({trackId})
+  }
+
+  /** 準備ができた人数と全体の人数 */
+  readiness(s: JamState = this.state.get()): {ready: number; total: number} {
+    const users = Object.keys(this.profile.getAll())
+    const states = this.ready.getAll()
+    const ready = users.filter(u => states[u]?.trackId === s.now?.id).length
+    return {ready, total: Math.max(1, users.length)}
+  }
+
+  /** 準備中なら、そろったか時間切れかを見て開始の予約を入れる（係の人だけ） */
+  private tryRelease() {
+    const s = this.state.get()
+    if (!this.isPending(s) || !this.isLeader()) return
+    const {ready, total} = this.readiness(s)
+    const waited = Date.now() - (s.play.at - this.authorOffset())
+    if (ready < total && waited < PREPARE_TIMEOUT_MS) return
+    const id = s.now!.id
+    void this.update(cur => {
+      if (cur.now?.id !== id || !cur.play.pending) return cur
+      return {...cur, play: {playing: true, pending: false, pos: cur.play.pos, at: Date.now() + RELEASE_DELAY_MS}}
+    })
+  }
+
   /** 曲の開始が予約されている時、開始までの残り ms（予約がなければ 0） */
   startDelay(s: JamState = this.state.get()): number {
-    if (!s.play.playing) return 0
+    if (!s.play.playing || s.play.pending) return 0
     return Math.max(0, s.play.at - this.authorOffset() - Date.now())
   }
 
@@ -96,13 +140,15 @@ export class Jam {
   private rebase(s: JamState): Play {
     const p = s.play
     const atLocal = p.at - this.authorOffset()
+    // 準備中は位置が進まないので、準備を始めた時刻だけ自分の時計に直す
+    if (p.playing && p.pending) return {...p, at: atLocal}
     if (p.playing && atLocal > Date.now()) return {...p, at: atLocal}
     return {...p, pos: this.expectedPos(s), at: Date.now()}
   }
 
   expectedPos(s: JamState = this.state.get()): number {
     const p = s.play
-    if (!p.playing) return p.pos
+    if (!p.playing || p.pending) return p.pos
     const atLocal = p.at - this.authorOffset()
     return p.pos + Math.max(0, Date.now() - atLocal) / 1000
   }
@@ -194,8 +240,8 @@ export class Jam {
       ...s,
       now: t,
       queue,
-      // 各端末が読み込み終わるまで待ってから全員で同時に始める
-      play: {playing: true, pos: 0, at: Date.now() + START_DELAY_MS},
+      // まず全員に準備（先読み）してもらい、そろったら同時に始める
+      play: {playing: true, pending: true, pos: 0, at: Date.now()},
       log: [
         ...(note ? this.log(s, note) : s.log),
         {at: Date.now(), text: t.title, trackId: t.id, kind: 'played' as const}
@@ -230,7 +276,8 @@ export class Jam {
       if (!s.now || s.play.playing === playing) return s
       return {
         ...s,
-        play: {...s.play, playing, ...(pos == null ? {} : {pos, at: Date.now()})},
+        // 準備中に止められたら準備は打ち切り。次の再生はふつうの再開になる
+        play: {...s.play, playing, pending: false, ...(pos == null ? {} : {pos, at: Date.now()})},
         log: this.log(s, `${this.myName()}さんが${playing ? '再生' : '一時停止'}`)
       }
     })

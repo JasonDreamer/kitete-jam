@@ -394,14 +394,28 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     const t = s.now
     dlog(
       `部屋: ${t ? `${t.kind} ${t.title.slice(0, 20)}` : 'なし'} ${s.play.playing ? '再生' : '停止'} ` +
-        `本来=${jam.expectedPos(s).toFixed(2)} 予約=${jam.startDelay(s)}ms`
+        `本来=${jam.expectedPos(s).toFixed(2)} 予約=${jam.startDelay(s)}ms` +
+        (jam.isPending(s) ? ` 準備中 ${jam.readiness(s).ready}/${jam.readiness(s).total}` : '')
     )
+    const pending = jam.isPending(s)
+    const delay = jam.startDelay(s)
     if (!t) {
       if (deck.currentId) deck.clear()
     } else if (deck.currentId !== t.id) {
-      void deck.load(t, jam.expectedPos(s), s.play.playing, jam.startDelay(s))
-    } else if (s.play.playing && jam.startDelay(s) > 0) {
-      // 開始の予約待ち。時刻が来たら deck が鳴らす
+      // 準備中なら先読みして待つ。途中から入った時はその位置ですぐ鳴らす
+      const mode = pending ? 'prepare' : s.play.playing && delay === 0 ? 'play' : 'pause'
+      const id = t.id
+      void deck.load(t, jam.expectedPos(s), mode).then(() => {
+        if (deck.currentId !== id) return
+        dlog('準備できた')
+        jam.markReady(id)
+      })
+      if (!pending && s.play.playing && delay > 0) deck.scheduleStart(delay)
+    } else if (pending) {
+      // 全員の準備待ち
+    } else if (s.play.playing && delay > 0) {
+      // 開始の予約。時刻が来たら deck が鳴らす
+      deck.scheduleStart(delay)
     } else if (s.play.playing) {
       const want = jam.expectedPos(s)
       deck.play(want)
@@ -522,7 +536,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     deck.resetSpotify()
     spReloaded = true
     const s = jam.state.get()
-    if (s.now?.kind === 'sp') void deck.load(s.now, jam.expectedPos(s), s.play.playing)
+    if (s.now?.kind === 'sp') void deck.load(s.now, jam.expectedPos(s), s.play.playing ? 'play' : 'pause')
   }
   const loginSpotify = () => {
     // ログイン画面は別ウィンドウで開き、閉じたら作り直す。
@@ -597,7 +611,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       return
     }
     if (deck.isPreview) showPreviewNotice()
-    if (!s.play.playing || deck.loading || deck.currentId !== s.now.id || jam.startDelay(s) > 0) {
+    if (!s.play.playing || deck.loading || deck.currentId !== s.now.id || jam.startDelay(s) > 0 || jam.isPending(s)) {
       if (!deck.isPreview) els.notice.hidden = true
       return
     }

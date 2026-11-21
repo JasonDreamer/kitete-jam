@@ -1,72 +1,49 @@
 # kitete jam
 
-公開URL: https://jasondreamer.github.io/kitete-jam/
+身内で同じ曲を同時に聴くための部屋。YouTube・SoundCloud・Spotify の曲URLに対応。
 
-身内だけで同じ曲を同時に聴くためのリスニングルーム。YouTube・SoundCloud・Spotify のURLを貼ると、部屋にいる全員の端末で同じ位置から流れる。
+公開URL: https://jasondreamer.github.io/kitete-jam/
 
 ## 仕組み
 
-- **音は送らない。** 曲はそれぞれの端末が YouTube / SoundCloud / Spotify の公式埋め込みプレイヤーで直接読み込む。端末どうしでやり取りするのは「いまの曲・再生中か・何秒の位置か・キュー・タイムライン」だけ。
-- **自前のサーバーは無い。** 端末どうしは WebRTC で直接つながる（[Trystero](https://github.com/dmotz/trystero)）。最初に相手を見つける合図だけ、公開の Nostr リレーを経由する。合図は招待コードを鍵に暗号化されるので、コードを知らない人には部屋が見えない。
-- **時計のずれを補正する。** つながった相手と定期的に時刻を問い合わせ、端末ごとの時計のずれを測っている。再生位置は「誰かの時計で何時何分に何秒地点」として共有し、自分の時計に直してから合わせる。0.8 秒以上ずれたら自動で位置を直す。
-- **あとから入った人も途中から合流できる。** 部屋の状態は参加者全員が持っているので、誰か1人でも部屋に残っていれば引き継がれる。全員が抜けると部屋の中身は消える。
+- 音は各端末が公式の埋め込みプレイヤーで鳴らす。端末間で送るのは再生位置・キュー・履歴だけ。
+- 端末どうしは WebRTC で直接つながる（[Trystero](https://github.com/dmotz/trystero)）。相手探しだけ公開の Nostr リレーを使う。
+- 8文字の招待コードが部屋IDと暗号の鍵を兼ねる。
+- 新しい曲は全員の準備（先読み）がそろってから同時に始める。YouTube は次の曲を裏で先読みする。
+- 部屋の中身は参加者が持っている。全員抜けると消える。
 
-## 使い方（離れた友だちと）
-
-1. GitHub に push すると、`.github/workflows/deploy.yml` が GitHub Pages に自動で公開する。初回だけリポジトリの Settings > Pages で Source を「GitHub Actions」にする。
-2. 公開されたURLを開き、名前を入れて「新しい部屋をつくる」。画面上部に `7KQM-X3PA` のような8文字の招待コードが出る。
-3. 「招待をコピー」でコードとリンクがまとめてコピーされるので、身内に送る。友だちはリンクを開くか、トップページでコードを打てば入れる（小文字やハイフン無しでもよい）。コードが合言葉を兼ねるので、身内以外には教えない。
-4. 同じコードで入り直せば、また同じ部屋に入れる。ただし部屋の中身（キューやタイムライン）は、誰か1人でも残っている間しか保たれない。
-
-キューとタイムラインの下にある「接続の様子」を開くと、相手ごとに「直接 / TURN経由 / ほかの人経由」と往復時間が出る。つながらない時はここを見る。
-
-### TURN の設定（つながらない人がいる時）
-
-ふつうの家庭の回線どうしなら、そのまま直接つながる。携帯回線（テザリング含む）、会社・学校のネットワーク、一部のマンション回線どうしだと直接つながれないことがあり、その時は中継サーバー（TURN）が要る。やり取りは再生位置などの小さなデータだけなので、中継しても通信量はごくわずか。
-
-[Metered の Open Relay](https://www.metered.ca/tools/openrelay/)（無料枠 月20GB）の場合:
-
-1. アカウントを作り、ダッシュボードで TURN の認証情報を返すURL（`https://<アプリ名>.metered.live/api/v1/turn/credentials?apiKey=...`）を控える。
-2. GitHub のリポジトリで Settings > Secrets and variables > Actions > **Variables** に `VITE_TURN_CREDENTIALS_URL` としてそのURLを登録する。
-3. Actions から「GitHub Pages に公開」を手動で再実行する。
-
-自前や別サービスの TURN を使うなら、代わりに `VITE_TURN_URLS`（カンマ区切り）、`VITE_TURN_USERNAME`、`VITE_TURN_CREDENTIAL` を登録する。
-
-これらの値はビルド後の JS に入るので、ページを開いた人なら読める。Metered 側でAPIキーの利用ドメインを公開URLに絞っておくとよい。
-
-### 手元で動かす
+## 開発
 
 ```powershell
 npm install
 npm run dev
 ```
 
-表示される `http://localhost:5173` を開く。TURN を試す時は `.env.local` に上の変数を書く。
+master に push すると GitHub Actions が Pages に公開する。
 
-## できること
+## 中継サーバー（TURN）
 
-- YouTube（通常・youtu.be・Shorts・YouTube Music の曲URL）、SoundCloud、Spotify の曲URLを追加
-- 再生 / 一時停止 / 次の曲へ / シーク（全員に反映）
-- 音量は自分の端末だけ
-- キュー: 順番の入れ替え（前へ）、外す
-- タイムライン: 何時にどの曲が流れたか、誰が何をしたか
+携帯回線どうしなどで直接つながらない時に使う。リポジトリの Settings > Secrets and variables > Actions > Variables に入れる。
 
-## 制限
+- `VITE_TURN_CREDENTIALS_URL`: 認証情報を返すURL（例: Metered の `https://<app>.metered.live/api/v1/turn/credentials?apiKey=...`）
+- または `VITE_TURN_URLS`（カンマ区切り）、`VITE_TURN_USERNAME`、`VITE_TURN_CREDENTIAL`
 
-- **Spotify はログインしている人だけ最後まで聴ける。** Spotify の公式埋め込みで流しているので、そのブラウザで open.spotify.com にログインしていない人は30秒の試聴になる（画面にログインの案内が出る）。試聴の人がいても、最後まで聴けている人がいる限り曲は途中で送られない。全員が試聴なら試聴の終わりで次へ進む。
-- Spotify の埋め込みは外から音量を変えられないので、Spotify の曲の間は音量バーが使えない。端末の音量で調整する。
-- Spotify の公式API（Web Playback SDK）は使っていない。2026年2月から開発者モードのアプリは「持ち主が Premium」「使えるのは5人まで」になり、身内でも人数と準備の負担が大きいため。
-- プレイリストURL（YouTube の list、SoundCloud の sets）はまだ非対応。曲ごとのURLを貼る。
-- 投稿者が埋め込みを禁止している YouTube 動画は再生できない。半数以上の人が再生できなかった曲は自動で飛ばし、タイムラインに理由が残る。
-- ブラウザの自動再生ブロックで自分だけ止まることがある。その時は画面に出る「ここを押すと合流します」を押す。
-- SoundCloud の埋め込みは同じブラウザ内で1つしか同時に鳴らない。動作確認で1台のPCに2タブ開くと片方が止まるが、別々の端末なら問題ない。
-- YouTube の広告は人ごとに別のタイミングで入る。広告が終わると自動で全員の位置に追いつく。
-- 国によって再生できない動画がある（地域制限）。再生できない人が半数未満なら飛ばさず、その人の画面にだけ理由が出る。
+値はビルド後の JS に入るので、ページを開いた人には見える。
+
+## Spotify の制限
+
+- 最後まで流れるのは PC の Chromium 系ブラウザで Premium にログインしている人だけ。それ以外は30秒の試聴。
+- Firefox 系（Zen など）はサイトのトラッキング防止を切る必要があり、自動再生も止められる。止められた時は埋め込みの再生ボタンを押す。
+- 埋め込みに音量の API がないので、Spotify の間は音量バーを出さない。
+
+## デバッグ表示
+
+画面左下に出る。「ログをコピー」でプレイヤーへの操作と応答の記録を取り出せる。URL に `&nodebug` を付けると消える。
 
 ## ファイル
 
-- `src/jam.ts` 部屋への参加、共有状態、時計のずれ測定、キュー操作
-- `src/players.ts` YouTube / SoundCloud の埋め込みを同じ操作で扱うラッパー
-- `src/sources.ts` URLの判定と曲名・サムネの取得（oEmbed）
+- `src/jam.ts` 部屋、共有状態、時計のずれ補正、準備待ち
+- `src/players.ts` 各埋め込みプレイヤーの操作
+- `src/sources.ts` URLの判定と曲情報の取得
+- `src/turn.ts` TURN の設定読み込み
 - `src/main.ts` 画面
-- `src/style.css` 見た目

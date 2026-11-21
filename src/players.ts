@@ -75,6 +75,10 @@ export class Deck {
   private spSeekAt = 0
   private spSeekPlaying = false
   private spRetries = 0
+  private spKickTarget: number | null = null
+  private spKickAt = 0
+  private spKicks = 0
+  private spReadyWaiter: (() => void) | null = null
   private startedAt = 0
   private spEndedFor: string | null = null
 
@@ -198,6 +202,9 @@ export class Deck {
             if (f) f.loading = 'eager'
             ctrl.addListener('ready', () => {
               this.log('← sp ready')
+              const w = this.spReadyWaiter
+              this.spReadyWaiter = null
+              w?.()
               resolve()
             })
             ctrl.addListener(
@@ -213,6 +220,15 @@ export class Deck {
                 if (d.duration) this.spDur = d.duration / 1000
                 this.spPlaying = !d.isPaused && !d.isBuffering
                 if (this.spPlaying) this.loading = false
+                // 鳴らした直後に埋め込みが勝手に止まって0秒に戻ることがある。
+                // 同じ送り方（resume の直後に seek）でもう1回だけ試す
+                const sinceKick = performance.now() - this.spKickAt
+                if (d.isPaused && d.position === 0 && this.spKickTarget != null && sinceKick < 2500 && this.spKicks < 1) {
+                  this.spKicks++
+                  const target = this.spKickTarget + sinceKick / 1000 + 0.3
+                  this.log('  勝手に止まった → もう一度')
+                  setTimeout(() => this.active === 'sp' && this.kickSp(target), 300)
+                }
                 // 最後まで行くと位置が長さに達して止まる（一時停止の印は立たない）
                 const atEnd = d.duration > 0 && d.position >= d.duration - 500
                 if (atEnd) this.spPlaying = false
@@ -300,21 +316,42 @@ export class Deck {
   private startSpAt(sec: number, playing: boolean) {
     // 秒単位でしか指定できない。すぐ鳴らす時は読み込みにかかる分だけ少し先を指定し、
     // 予約して待つ時はその位置ちょうどにする
-    const at = Math.max(0, playing ? Math.round(sec + 0.5) : Math.floor(sec))
+    const at = Math.max(0, Math.floor(sec))
     if (typeof this.sp.loadEntity === 'function') this.sp.loadEntity(this.spUri, false, at)
     else this.sp.loadUri(this.spUri)
     // 実際の位置は埋め込みから返ってくるまで分からないので、仮の値で「再生中」にはしない
     this.spPos = at
     this.spPosAt = performance.now()
     this.spPlaying = false
-    if (playing) {
-      this.sp.play()
-      this.spSeekTarget = at
-      this.spSeekAt = performance.now()
-      this.spSeekPlaying = true
-    } else {
+    if (!playing) {
       this.loading = false
+      return
     }
+    // 読み込み直すと ready がもう一度来る。それを待ってから鳴らす（来なければ1.5秒で鳴らす）
+    const t0 = performance.now()
+    const id = this.trackId
+    const go = () => {
+      if (this.spReadyWaiter === go) this.spReadyWaiter = null
+      if (this.trackId !== id) return
+      this.spKicks = 0
+      this.kickSp(sec + (performance.now() - t0) / 1000)
+    }
+    this.spReadyWaiter = go
+    setTimeout(() => this.spReadyWaiter === go && go(), 1500)
+  }
+
+  /**
+   * Spotify を鳴らす。ログで続けて鳴ったのは「resume の直後に seek」の時だけだったので、
+   * play/resume 単体ではなく必ずこの組み合わせで送る
+   */
+  private kickSp(target: number) {
+    if (!this.sp) return
+    this.sp.resume()
+    this.sp.seek(Math.max(0, Math.round(target)))
+    this.spKickTarget = target
+    this.spKickAt = performance.now()
+    this.spSeekTarget = target
+    this.spSeekAt = performance.now()
   }
 
   /**
@@ -325,12 +362,12 @@ export class Deck {
     if (this.spSeekTarget == null || !this.sp) return
     const since = (performance.now() - this.spSeekAt) / 1000
     if (since < 3) return
-    const want = this.spSeekTarget + (this.spSeekPlaying ? since : 0)
     const actual = this.spNow()
+    const target = this.spSeekTarget
     this.spSeekTarget = null
-    // 読み込み直しは自動ではしない（外から再生を指示しても通らないブラウザがあり、
-    // 読み込み直すと無音になる）。結果だけ記録して、戻すのは「合流する」に任せる
-    this.log(`  seek 確認: 実際 ${actual.toFixed(2)} / 本来 ${want.toFixed(2)}${Math.abs(actual - want) > 2.5 ? ' → 効いていない' : ''}`)
+    // シーク先からそのまま止まっている場合も、そこから鳴り進んでいる場合も「効いた」とみなす
+    const ok = Math.abs(actual - target) < 2.5 || Math.abs(actual - (target + since)) < 2.5
+    this.log(`  seek 確認: 実際 ${actual.toFixed(2)} / 送った位置 ${target.toFixed(2)}${ok ? '' : ' → 効いていない'}`)
   }
 
   /**
@@ -370,7 +407,10 @@ export class Deck {
   play() {
     if (this.active === 'yt') this.yt?.playVideo()
     if (this.active === 'sc') this.sc?.play()
-    if (this.active === 'sp' && !this.spPlaying) this.sp?.resume()
+    // 部屋の状態が変わるたびに呼ばれるので、鳴らした直後は送り直さない
+    if (this.active === 'sp' && !this.spPlaying && performance.now() - this.spKickAt > 2500) {
+      this.kickSp(this.spNow())
+    }
   }
 
   pause() {
@@ -440,6 +480,8 @@ export class Deck {
 
   /** 再生中の Spotify は約1秒ごとに位置を返す。3秒以上来なければ埋め込みが止まっている */
   private spStale() {
+    // 裏のタブでは更新が間引かれるので、止まったとは判定しない
+    if (document.hidden) return false
     return performance.now() - this.spPosAt > SP_STALE_MS
   }
 

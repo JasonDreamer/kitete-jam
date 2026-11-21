@@ -156,7 +156,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
           <div id="host-yt" class="embed" hidden></div>
           <div id="host-sc" class="embed" hidden></div>
           <div id="host-sp" class="embed" hidden></div>
-          <p id="empty" class="media-empty">URLを貼って最初の1曲を</p>
+          <p id="empty" class="media-empty">再生中の曲はありません</p>
         </div>
         <div class="np">
           <h1 id="np-title" class="np-title"></h1>
@@ -407,7 +407,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     for (const t of [s.now, ...s.queue]) if (t) known.set(t.id, t)
     const played = s.log.filter((e: LogEntry) => e.kind === 'played').reverse()
     if (!played.length) {
-      els.history.innerHTML = `<li class="list-empty">まだ何も流れていません</li>`
+      els.history.innerHTML = `<li class="list-empty">履歴はありません</li>`
       return
     }
     els.history.innerHTML = played
@@ -537,7 +537,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
   })
   els.url.addEventListener('input', () => (els.addMsg.textContent = ''))
 
-  const inviteText = `kitete jam で一緒に聴こう\n招待コード: ${showCode(roomId)}\n${location.origin}${location.pathname}#r=${roomId}`
+  const inviteText = `kitete jam\n招待コード: ${showCode(roomId)}\n${location.origin}${location.pathname}#r=${roomId}`
   $('invite').addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(inviteText)

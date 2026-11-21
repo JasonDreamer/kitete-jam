@@ -12,6 +12,8 @@ declare global {
 
 export type PlayerEvents = {
   onEnded: (trackId: string) => void
+  /** 自動再生が止められていた Spotify を、本人が埋め込みの再生ボタンで鳴らした */
+  onUserStarted?: () => void
   onError: (trackId: string, reason: string) => void
 }
 
@@ -79,6 +81,7 @@ export class Deck {
   private spKickAt = 0
   private spKicks = 0
   private spReadyWaiter: (() => void) | null = null
+  private spBlocked = false
   private startedAt = 0
   private spEndedFor: string | null = null
 
@@ -223,11 +226,25 @@ export class Deck {
                 // 鳴らした直後に埋め込みが勝手に止まって0秒に戻ることがある。
                 // 同じ送り方（resume の直後に seek）でもう1回だけ試す
                 const sinceKick = performance.now() - this.spKickAt
-                if (d.isPaused && d.position === 0 && this.spKickTarget != null && sinceKick < 2500 && this.spKicks < 1) {
+                const reverted = d.isPaused && d.position === 0 && this.spKickTarget != null && sinceKick < 2500
+                if (reverted && this.spKicks < 1) {
                   this.spKicks++
-                  const target = this.spKickTarget + sinceKick / 1000 + 0.3
+                  const target = this.spKickTarget! + sinceKick / 1000 + 0.3
                   this.log('  勝手に止まった → もう一度')
                   setTimeout(() => this.active === 'sp' && this.kickSp(target), 300)
+                } else if (reverted && !this.spBlocked) {
+                  // 2回続けて戻された。ブラウザが自動再生を止めているので、
+                  // 本人が埋め込みの再生ボタンを押すまで外からは鳴らさない
+                  this.spBlocked = true
+                  this.spKickTarget = null
+                  this.spSeekTarget = null
+                  this.log('  自動再生が止められている → 再生ボタン待ち')
+                } else if (this.spBlocked && this.spPlaying) {
+                  // 止められている間はこちらから鳴らしていないので、鳴り出したら本人が押した
+                  this.spBlocked = false
+                  this.spSeekTarget = null
+                  this.log('  再生ボタンが押された')
+                  this.ev.onUserStarted?.()
                 }
                 // 最後まで行くと位置が長さに達して止まる（一時停止の印は立たない）
                 const atEnd = d.duration > 0 && d.position >= d.duration - 500
@@ -386,6 +403,7 @@ export class Deck {
     this.spDur = 0
     this.spEndedFor = null
     this.spSeekTarget = null
+    this.spBlocked = false
     this.hosts.sp.replaceChildren()
   }
 
@@ -408,7 +426,7 @@ export class Deck {
     if (this.active === 'yt') this.yt?.playVideo()
     if (this.active === 'sc') this.sc?.play()
     // 部屋の状態が変わるたびに呼ばれるので、鳴らした直後は送り直さない
-    if (this.active === 'sp' && !this.spPlaying && performance.now() - this.spKickAt > 2500) {
+    if (this.active === 'sp' && !this.spPlaying && !this.spBlocked && performance.now() - this.spKickAt > 2500) {
       this.kickSp(this.spNow())
     }
   }
@@ -503,6 +521,11 @@ export class Deck {
     }
     this.play()
     this.seek(sec)
+  }
+
+  /** Spotify の自動再生がブラウザに止められていて、埋め込みの再生ボタン待ち */
+  get autoplayBlocked() {
+    return this.active === 'sp' && this.spBlocked
   }
 
   /** 再生が始まってからの経過秒（始まっていなければ 0） */

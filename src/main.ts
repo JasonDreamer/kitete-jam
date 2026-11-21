@@ -285,6 +285,11 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
         if (deck.isPreview) jam.reportFailure(id, PREVIEW_ENDED)
         else void jam.next(id, null)
       },
+      onUserStarted: () => {
+        const want = jam.expectedPos()
+        dlog(`部屋の位置へ合わせる: seek ${want.toFixed(2)}`)
+        deck.seek(want)
+      },
       onError: (id, reason) => {
         if (failed.has(id)) return
         failed.add(id)
@@ -491,6 +496,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
   const showNotice = (text: string, btn: string, action: () => void) => {
     els.noticeText.textContent = text
     els.noticeBtn.textContent = btn
+    els.noticeBtn.hidden = !btn
     noticeAction = action
     els.notice.hidden = false
   }
@@ -571,6 +577,10 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     }
     els.dur.textContent = dur ? fmt(dur) : '--:--'
 
+    if (deck.autoplayBlocked) {
+      showNotice('ブラウザが自動再生を止めています。Spotify の再生ボタンを押してください', '', () => {})
+      return
+    }
     if (deck.isPreview) showPreviewNotice()
     if (!s.play.playing || deck.loading || deck.currentId !== s.now.id || jam.startDelay(s) > 0) {
       if (!deck.isPreview) els.notice.hidden = true

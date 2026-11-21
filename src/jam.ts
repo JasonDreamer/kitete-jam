@@ -7,7 +7,7 @@ import type {Track} from './sources'
  */
 export type Play = {playing: boolean; pos: number; at: number; pending?: boolean}
 
-export type LogEntry = {at: number; text: string; trackId?: string; kind: 'played' | 'event'}
+export type LogEntry = {at: number; text: string; trackId?: string; kind: 'played' | 'event'; merge?: string}
 
 export type JamState = {
   now: Track | null
@@ -17,7 +17,7 @@ export type JamState = {
 }
 
 const EMPTY: JamState = {now: null, play: {playing: false, pos: 0, at: 0}, queue: [], log: []}
-const LOG_MAX = 60
+const LOG_MAX = 100
 /** 全員の準備がそろってから鳴らし始めるまでの間（予約が全員に届くのを待つ分） */
 const RELEASE_DELAY_MS = 700
 /** 準備が終わらない人がいても、これだけ待ったら始める */
@@ -231,8 +231,12 @@ export class Jam {
     })
   }
 
+  /** merge を渡すと、同じ merge の直前の記録（10秒以内）を置き換える。シークを動かし続けた時に並ばないように */
   private log(s: JamState, text: string, extra: Partial<LogEntry> = {}): LogEntry[] {
-    return [...s.log, {at: Date.now(), text, kind: 'event' as const, ...extra}].slice(-LOG_MAX)
+    const entry: LogEntry = {at: Date.now(), text, kind: 'event', ...extra}
+    const last = s.log[s.log.length - 1]
+    const base = entry.merge && last?.merge === entry.merge && entry.at - last.at < 10000 ? s.log.slice(0, -1) : s.log
+    return [...base, entry].slice(-LOG_MAX)
   }
 
   private startTrack(s: JamState, t: Track, queue: Track[], note: string | null): JamState {
@@ -284,7 +288,16 @@ export class Jam {
   }
 
   seek(pos: number) {
-    return this.update(s => (s.now ? {...s, play: {...s.play, pos, at: Date.now()}} : s))
+    return this.update(s => {
+      if (!s.now) return s
+      const m = Math.floor(Math.max(0, pos) / 60)
+      const sec = String(Math.floor(Math.max(0, pos) % 60)).padStart(2, '0')
+      return {
+        ...s,
+        play: {...s.play, pos, at: Date.now()},
+        log: this.log(s, `${this.myName()}さんが ${m}:${sec} に移動`, {merge: `seek:${this.selfPeerId}:${s.now.id}`})
+      }
+    })
   }
 
   remove(id: string) {
@@ -301,7 +314,7 @@ export class Jam {
       if (i <= 0) return s
       const q = [...s.queue]
       ;[q[i - 1], q[i]] = [q[i], q[i - 1]]
-      return {...s, queue: q}
+      return {...s, queue: q, log: this.log(s, `${this.myName()}さんが「${q[i - 1].title}」を前へ`)}
     })
   }
 }

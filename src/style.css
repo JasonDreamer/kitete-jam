@@ -498,6 +498,12 @@ body.in-room {
   padding: 0;
 }
 
+.act {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
 .list-empty {
   padding: 24px 0;
   color: var(--muted);
@@ -856,6 +862,21 @@ body.in-room {
 
 .debug-log {
   opacity: 0.8;
+}
+
+.debug-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.debug.is-folded {
+  width: auto;
+  padding: 6px;
+}
+
+.debug.is-folded pre,
+.debug.is-folded .debug-copy {
+  display: none;
 }
 
 .debug .btn-small {

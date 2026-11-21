@@ -9,6 +9,7 @@ const app = document.getElementById('app')!
 const NAME_KEY = 'kitete-jam:name'
 const VOL_KEY = 'kitete-jam:volume'
 const TAB_KEY = 'kitete-jam:tab'
+const DEBUG_FOLD_KEY = 'kitete-jam:debug-folded'
 const store = {
   get: (k: string) => {
     try {
@@ -179,9 +180,11 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
         <div class="tabs" role="tablist" aria-label="リスト">
           <button role="tab" id="tab-queue" aria-controls="queue" type="button">次に再生<span id="q-count" class="count"></span></button>
           <button role="tab" id="tab-history" aria-controls="history" type="button">履歴</button>
+          <button role="tab" id="tab-activity" aria-controls="activity" type="button">アクティビティ</button>
         </div>
         <ol id="queue" class="list" role="tabpanel" aria-labelledby="tab-queue"></ol>
         <ol id="history" class="list" role="tabpanel" aria-labelledby="tab-history" hidden></ol>
+        <ol id="activity" class="list" role="tabpanel" aria-labelledby="tab-activity" hidden></ol>
       </aside>
     </div>
 
@@ -330,12 +333,24 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
         const box = document.createElement('div')
         box.className = 'debug'
         box.innerHTML = `<pre class="debug-live"></pre><pre class="debug-log"></pre>
-          <button class="btn btn-small" type="button">ログをコピー</button>`
+          <div class="debug-btns">
+            <button class="btn btn-small debug-copy" type="button">ログをコピー</button>
+            <button class="btn btn-small debug-fold" type="button" aria-expanded="true">畳む</button>
+          </div>`
         document.body.append(box)
+        const fold = box.querySelector<HTMLButtonElement>('.debug-fold')!
+        const setFolded = (folded: boolean) => {
+          box.classList.toggle('is-folded', folded)
+          fold.textContent = folded ? 'デバッグ' : '畳む'
+          fold.setAttribute('aria-expanded', String(!folded))
+          store.set(DEBUG_FOLD_KEY, folded ? '1' : '')
+        }
+        fold.addEventListener('click', () => setFolded(!box.classList.contains('is-folded')))
+        setFolded(store.get(DEBUG_FOLD_KEY) === '1')
         return {
           live: box.querySelector<HTMLElement>('.debug-live')!,
           log: box.querySelector<HTMLElement>('.debug-log')!,
-          copy: box.querySelector<HTMLButtonElement>('button')!
+          copy: box.querySelector<HTMLButtonElement>('.debug-copy')!
         }
       })()
   const dlog = (msg: string) => {
@@ -370,9 +385,11 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
   })
 
   /* --- タブ --- */
-  const tabs = {queue: $('tab-queue'), history: $('tab-history')}
-  const selectTab = (which: 'queue' | 'history', focus = false) => {
-    for (const k of ['queue', 'history'] as const) {
+  const TABS = ['queue', 'history', 'activity'] as const
+  type Tab = (typeof TABS)[number]
+  const tabs: Record<Tab, HTMLElement> = {queue: $('tab-queue'), history: $('tab-history'), activity: $('tab-activity')}
+  const selectTab = (which: Tab, focus = false) => {
+    for (const k of TABS) {
       const on = k === which
       tabs[k].setAttribute('aria-selected', String(on))
       tabs[k].tabIndex = on ? 0 : -1
@@ -381,14 +398,15 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     if (focus) tabs[which].focus()
     store.set(TAB_KEY, which)
   }
-  tabs.queue.addEventListener('click', () => selectTab('queue'))
-  tabs.history.addEventListener('click', () => selectTab('history'))
-  for (const t of Object.values(tabs)) {
-    t.addEventListener('keydown', e => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') selectTab(t === tabs.queue ? 'history' : 'queue', true)
+  TABS.forEach((k, i) => {
+    tabs[k].addEventListener('click', () => selectTab(k))
+    tabs[k].addEventListener('keydown', e => {
+      const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+      if (step) selectTab(TABS[(i + step + TABS.length) % TABS.length], true)
     })
-  }
-  selectTab(store.get(TAB_KEY) === 'history' ? 'history' : 'queue')
+  })
+  const savedTab = store.get(TAB_KEY)
+  selectTab(TABS.find(k => k === savedTab) ?? 'queue')
 
   /* --- 状態を画面と再生に反映 --- */
 
@@ -439,6 +457,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     renderNow(s)
     renderQueue(s)
     renderHistory(s)
+    renderActivity(s)
     announce(s)
   }
 
@@ -514,6 +533,15 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
         </li>`
       })
       .join('')
+  }
+
+  // 誰が何をしたか。新しいものを上に
+  const renderActivity = (s: JamState) => {
+    const events = s.log.filter((e: LogEntry) => e.kind === 'event').reverse()
+    const list = $('activity')
+    list.innerHTML = events.length
+      ? events.map(e => `<li class="act">${esc(e.text)}</li>`).join('')
+      : `<li class="list-empty">アクティビティはありません</li>`
   }
 
   els.queue.addEventListener('click', e => {

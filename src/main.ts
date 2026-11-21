@@ -468,8 +468,17 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       reloadSpotify()
     }, 500)
   }
+  // Firefox 系（Zen・Floorp・LibreWolf など）はサードパーティ Cookie を隔離するので、
+  // ログインしていても埋め込みに伝わらない。サイトごとにトラッキング防止を外せば届く
+  const isFirefoxFamily = /Firefox\//.test(navigator.userAgent)
   const showPreviewNotice = () =>
-    spReloaded
+    isFirefoxFamily
+      ? showNotice(
+          'このブラウザでは試聴になります。アドレスバー左の盾アイコンから、このサイトのトラッキング防止をオフにしてください',
+          '再読み込み',
+          reloadSpotify
+        )
+      : spReloaded
       ? showNotice(
           '試聴のままです。PC の Chrome / Edge、Premium アカウント、サードパーティ Cookie の許可が必要です',
           '再読み込み',

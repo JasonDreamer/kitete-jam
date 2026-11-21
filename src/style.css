@@ -826,11 +826,29 @@ body.in-room {
   left: 8px;
   bottom: calc(var(--player-h) + 8px);
   z-index: 30;
-  margin: 0;
+  width: min(460px, calc(100vw - 16px));
   padding: 8px 10px;
   border-radius: var(--r-s);
-  background: var(--text);
-  color: var(--bg);
-  font: 12px/1.5 ui-monospace, Consolas, monospace;
-  white-space: pre;
+  background: rgb(0 0 0 / 0.82);
+  color: #f2f2f4;
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.debug pre {
+  margin: 0;
+  font: 11px/1.45 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.debug-log {
+  opacity: 0.8;
+}
+
+.debug .btn-small {
+  min-height: 32px;
+  background: #ffffff;
+  color: #111113;
 }

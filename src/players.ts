@@ -81,6 +81,8 @@ export class Deck {
   private active: Kind | null = null
   private trackId: string | null = null
   private volume = 80
+  /** デバッグ用の記録先 */
+  log: (msg: string) => void = () => {}
   /** 曲の読み込み中は時刻が当てにならないので同期補正を止める */
   loading = false
 
@@ -120,6 +122,7 @@ export class Deck {
             events: {
               onReady: () => resolve(),
               onStateChange: (e: {data: number}) => {
+                this.log(`← yt state ${e.data}`)
                 if (e.data === 0 && this.active === 'yt' && this.trackId) this.ev.onEnded(this.trackId)
                 if (e.data === 1) this.loading = false
               },
@@ -178,14 +181,33 @@ export class Deck {
           this.hosts.sp.append(el)
           api.createController(el, {uri: firstUri, width: '100%', height: '100%'}, (ctrl: any) => {
             this.sp = ctrl
+            // デバッグ用に、こちらから送った操作を記録する
+            for (const m of ['loadEntity', 'loadUri', 'seek', 'play', 'resume', 'pause', 'togglePlay']) {
+              if (typeof ctrl[m] !== 'function') continue
+              const orig = ctrl[m].bind(ctrl)
+              ctrl[m] = (...args: unknown[]) => {
+                this.log(`→ sp.${m}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+                return orig(...args)
+              }
+            }
+            ctrl.addListener('playback_started', (e: {data?: {playingURI?: string}}) =>
+              this.log(`← sp started ${e.data?.playingURI ?? ''}`)
+            )
             // 既定の loading="lazy" だと裏のタブで読み込まれないので即時にする
             const f = this.hosts.sp.querySelector('iframe')
             if (f) f.loading = 'eager'
-            ctrl.addListener('ready', () => resolve())
+            ctrl.addListener('ready', () => {
+              this.log('← sp ready')
+              resolve()
+            })
             ctrl.addListener(
               'playback_update',
               (e: {data: {isPaused: boolean; isBuffering: boolean; position: number; duration: number}}) => {
                 const d = e.data
+                this.log(
+                  `← sp update pos=${(d.position / 1000).toFixed(2)} dur=${(d.duration / 1000).toFixed(1)}` +
+                    `${d.isPaused ? ' paused' : ''}${d.isBuffering ? ' buffering' : ''}`
+                )
                 this.spPos = d.position / 1000
                 this.spPosAt = performance.now()
                 if (d.duration) this.spDur = d.duration / 1000
@@ -297,8 +319,7 @@ export class Deck {
 
   /**
    * シークが効いたかを、埋め込みから返ってくる実際の位置で確かめる。
-   * 3秒たってもずれていたら、位置を指定して読み込み直す（1曲につき1回まで。
-   * 何度も読み込み直すと埋め込みが固まるので、それ以上は「合流する」ボタンに任せる）
+   * （デバッグの記録用）
    */
   private verifySpSeek() {
     if (this.spSeekTarget == null || !this.sp) return
@@ -307,10 +328,9 @@ export class Deck {
     const want = this.spSeekTarget + (this.spSeekPlaying ? since : 0)
     const actual = this.spNow()
     this.spSeekTarget = null
-    if (Math.abs(actual - want) > 2.5 && this.spRetries < 1) {
-      this.spRetries++
-      this.startSpAt(want, this.spSeekPlaying)
-    }
+    // 読み込み直しは自動ではしない（外から再生を指示しても通らないブラウザがあり、
+    // 読み込み直すと無音になる）。結果だけ記録して、戻すのは「合流する」に任せる
+    this.log(`  seek 確認: 実際 ${actual.toFixed(2)} / 本来 ${want.toFixed(2)}${Math.abs(actual - want) > 2.5 ? ' → 効いていない' : ''}`)
   }
 
   /**

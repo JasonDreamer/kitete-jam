@@ -296,6 +296,45 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
 
   if (import.meta.env.DEV) Object.assign(window, {__kj: {deck, jam}})
 
+  /* --- デバッグ表示（リリースまでは常に出す。#...&nodebug で消せる） --- */
+  const NL = String.fromCharCode(10)
+  const logLines: string[] = []
+  const t0 = performance.now()
+  const debug = new URLSearchParams(location.hash.slice(1)).has('nodebug')
+    ? null
+    : (() => {
+        const box = document.createElement('div')
+        box.className = 'debug'
+        box.innerHTML = `<pre class="debug-live"></pre><pre class="debug-log"></pre>
+          <button class="btn btn-small" type="button">ログをコピー</button>`
+        document.body.append(box)
+        return {
+          live: box.querySelector<HTMLElement>('.debug-live')!,
+          log: box.querySelector<HTMLElement>('.debug-log')!,
+          copy: box.querySelector<HTMLButtonElement>('button')!
+        }
+      })()
+  const dlog = (msg: string) => {
+    logLines.push(`${((performance.now() - t0) / 1000).toFixed(1).padStart(6)} ${msg}`)
+    if (logLines.length > 500) logLines.shift()
+    if (debug) debug.log.textContent = logLines.slice(-10).join(NL)
+  }
+  deck.log = dlog
+  debug?.copy.addEventListener('click', async () => {
+    const text = [navigator.userAgent, ...logLines].join(NL)
+    try {
+      await navigator.clipboard.writeText(text)
+      toast('ログをコピーしました')
+    } catch {
+      const dlg = $<HTMLDialogElement>('invite-dlg')
+      $('invite-h').textContent = 'ログ'
+      const ta = $<HTMLTextAreaElement>('invite-text')
+      ta.value = text
+      dlg.showModal()
+      ta.select()
+    }
+  })
+
   const vol = Number(store.get(VOL_KEY) ?? 80)
   els.vol.value = String(vol)
   paintRange(els.vol)
@@ -335,6 +374,10 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
 
   const apply = (s: JamState) => {
     const t = s.now
+    dlog(
+      `部屋: ${t ? `${t.kind} ${t.title.slice(0, 20)}` : 'なし'} ${s.play.playing ? '再生' : '停止'} ` +
+        `本来=${jam.expectedPos(s).toFixed(2)} 予約=${jam.startDelay(s)}ms`
+    )
     if (!t) {
       if (deck.currentId) deck.clear()
     } else if (deck.currentId !== t.id) {
@@ -346,6 +389,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       const want = jam.expectedPos(s)
       if (!deck.loading && Math.abs(deck.time() - want) > deck.tolerance) {
         lastCorrection = Date.now()
+        dlog(`補正(部屋の変化): seek ${want.toFixed(2)} 実際=${deck.time().toFixed(2)}`)
         deck.seek(want)
       }
     } else {
@@ -496,10 +540,6 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
   let lastResume = 0
   /** 再生（または開始の予約時刻）がいつ始まったか。自分の時計で */
   const lastStart = (s: JamState) => s.play.at - jam.authorOffset()
-  // URL に &debug を付けた時だけ、実際の再生位置と本来の位置を数値で出す（ずれの調査用）
-  const debugBox = new URLSearchParams(location.hash.slice(1)).has('debug')
-    ? document.body.appendChild(Object.assign(document.createElement('pre'), {className: 'debug'}))
-    : null
   setInterval(() => {
     const s = jam.state.get()
     if (!s.now) {
@@ -512,13 +552,13 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     // Spotify の埋め込みは外から音量を変えられない
     els.vol.disabled = !deck.canSetVolume
     const want = jam.expectedPos(s)
-    if (debugBox) {
+    if (debug) {
       const actual = deck.time()
-      debugBox.textContent = [
+      debug.live.textContent = [
         `種類 ${deck.kind ?? '-'}  再生中 ${deck.isPlaying()}  試聴 ${deck.isPreview}`,
         `実際 ${actual.toFixed(2)}  本来 ${want.toFixed(2)}  差 ${(actual - want).toFixed(2)}`,
-        `長さ ${deck.duration().toFixed(1)}  読込中 ${deck.loading}`
-      ].join('\n')
+        `長さ ${deck.duration().toFixed(1)}  読込中 ${deck.loading}  予約 ${jam.startDelay(s)}ms`
+      ].join(NL)
     }
     // 試聴中の長さ（30秒）は曲の本当の長さではないので出さない
     const dur = deck.isPreview ? 0 : deck.duration() || 0
@@ -550,6 +590,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       drift > deck.tolerance
     ) {
       lastCorrection = now
+      dlog(`補正(定期): seek ${want.toFixed(2)} 実際=${deck.time().toFixed(2)}`)
       deck.seek(want)
     }
     // 広告やバッファで止まったままなら再開を試みる。
@@ -560,7 +601,11 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       deck.play()
     }
     if (stalled) {
-      showNotice('この端末だけ止まっています', '合流する', () => deck.rejoin(jam.expectedPos()))
+      if (els.notice.hidden) dlog('止まっていると判定')
+      showNotice('この端末だけ止まっています', '合流する', () => {
+        dlog('「合流する」を押した')
+        deck.rejoin(jam.expectedPos())
+      })
     } else if (!deck.isPreview) els.notice.hidden = true
     // 終了イベントを取りこぼしたときの保険
     if (dur && want > dur + 3 && jam.isLeader()) void jam.next(s.now.id, null)
@@ -607,6 +652,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     } catch {
       // クリップボードが使えないブラウザでは、選択した状態で見せる
       const dlg = $<HTMLDialogElement>('invite-dlg')
+      $('invite-h').textContent = '招待'
       const ta = $<HTMLTextAreaElement>('invite-text')
       ta.value = inviteText
       dlg.showModal()

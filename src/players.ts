@@ -258,6 +258,24 @@ export class Deck {
     }
   }
 
+  /**
+   * Spotify の埋め込みは、読み込んだ瞬間のログイン状態でフル再生か試聴かを決める。
+   * ログインし直した後は、プレイヤーを作り直さないと試聴のまま変わらない
+   */
+  resetSpotify() {
+    try {
+      this.sp?.destroy()
+    } catch {
+      /* すでに消えていても構わない */
+    }
+    this.sp = null
+    this.spReady = null
+    this.spPlaying = false
+    this.spDur = 0
+    this.spEndedFor = null
+    this.hosts.sp.replaceChildren()
+  }
+
   private pauseOther(next: Kind) {
     if (next !== 'yt' && this.yt) this.yt.stopVideo?.()
     if (next !== 'sc' && this.sc) this.sc.pause()

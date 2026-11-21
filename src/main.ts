@@ -445,10 +445,37 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     els.notice.hidden = false
   }
   els.noticeBtn.addEventListener('click', () => noticeAction())
+  // Spotify のプレイヤーを作り直して、いまの位置から読み込み直す
+  let spReloaded = false
+  const reloadSpotify = () => {
+    deck.resetSpotify()
+    spReloaded = true
+    const s = jam.state.get()
+    if (s.now?.kind === 'sp') void deck.load(s.now, jam.expectedPos(s), s.play.playing)
+  }
+  const loginSpotify = () => {
+    // ログイン画面は別ウィンドウで開き、閉じたら作り直す。
+    // continue を status にしておくと、ログイン後にほかのページへ移らない
+    const w = window.open(
+      'https://accounts.spotify.com/login?continue=https%3A%2F%2Faccounts.spotify.com%2Fstatus',
+      'spotify-login',
+      'popup,width=480,height=720'
+    )
+    if (!w) return reloadSpotify()
+    const timer = setInterval(() => {
+      if (!w.closed) return
+      clearInterval(timer)
+      reloadSpotify()
+    }, 500)
+  }
   const showPreviewNotice = () =>
-    showNotice('Spotify にログインすると最後まで聴けます', 'ログイン', () => {
-      window.open('https://accounts.spotify.com/login', '_blank', 'noopener')
-    })
+    spReloaded
+      ? showNotice(
+          '試聴のままです。PC の Chrome / Edge、Premium アカウント、サードパーティ Cookie の許可が必要です',
+          '再読み込み',
+          reloadSpotify
+        )
+      : showNotice('Spotify が試聴（30秒）になっています', 'ログインして再読み込み', loginSpotify)
 
   /* --- 0.25 秒ごとに位置表示と同期補正 --- */
   let lastCorrection = 0

@@ -248,6 +248,7 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     toggle: $<HTMLButtonElement>('toggle'),
     skip: $<HTMLButtonElement>('skip'),
     vol: $<HTMLInputElement>('vol'),
+    volWrap: document.querySelector<HTMLElement>('.pl-volume')!,
     url: $<HTMLInputElement>('url'),
     addBtn: $<HTMLButtonElement>('add-btn'),
     addMsg: $('add-msg'),
@@ -289,6 +290,18 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
         const want = jam.expectedPos()
         dlog(`部屋の位置へ合わせる: seek ${want.toFixed(2)}`)
         deck.seek(want)
+      },
+      onUserSeek: sec => {
+        dlog(`部屋へ反映: シーク ${sec.toFixed(2)}`)
+        void jam.seek(sec)
+      },
+      onUserPause: sec => {
+        dlog(`部屋へ反映: 一時停止 ${sec.toFixed(2)}`)
+        void jam.setPlaying(false, sec)
+      },
+      onUserPlay: sec => {
+        dlog(`部屋へ反映: 再生 ${sec.toFixed(2)}`)
+        void jam.setPlaying(true, sec)
       },
       onError: (id, reason) => {
         if (failed.has(id)) return
@@ -390,9 +403,11 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
     } else if (s.play.playing && jam.startDelay(s) > 0) {
       // 開始の予約待ち。時刻が来たら deck が鳴らす
     } else if (s.play.playing) {
-      deck.play()
       const want = jam.expectedPos(s)
-      if (!deck.loading && Math.abs(deck.time() - want) > deck.tolerance) {
+      deck.play(want)
+      // Spotify は play(want) が位置合わせも兼ねるので、鳴っている時だけ追加で合わせる
+      const canSeek = deck.kind !== 'sp' || deck.isPlaying()
+      if (!deck.loading && canSeek && Math.abs(deck.time() - want) > deck.tolerance) {
         lastCorrection = Date.now()
         dlog(`補正(部屋の変化): seek ${want.toFixed(2)} 実際=${deck.time().toFixed(2)}`)
         deck.seek(want)
@@ -555,8 +570,8 @@ const enterRoom = (roomId: string, name: string, turn: Awaited<ReturnType<typeof
       els.notice.hidden = true
       return
     }
-    // Spotify の埋め込みは外から音量を変えられない
-    els.vol.disabled = !deck.canSetVolume
+    // Spotify の埋め込みは外から音量を変えられないので、その間は音量バーを出さない
+    els.volWrap.hidden = !deck.canSetVolume
     const want = jam.expectedPos(s)
     if (debug) {
       const actual = deck.time()

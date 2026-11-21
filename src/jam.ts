@@ -224,12 +224,13 @@ export class Jam {
     })
   }
 
-  setPlaying(playing: boolean) {
+  /** pos を渡すと、その位置で再生／停止する（埋め込みを直接操作された時の位置を使う） */
+  setPlaying(playing: boolean, pos?: number) {
     return this.update(s => {
       if (!s.now || s.play.playing === playing) return s
       return {
         ...s,
-        play: {...s.play, playing},
+        play: {...s.play, playing, ...(pos == null ? {} : {pos, at: Date.now()})},
         log: this.log(s, `${this.myName()}さんが${playing ? '再生' : '一時停止'}`)
       }
     })

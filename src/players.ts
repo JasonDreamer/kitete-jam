@@ -14,6 +14,10 @@ export type PlayerEvents = {
   onEnded: (trackId: string) => void
   /** 自動再生が止められていた Spotify を、本人が埋め込みの再生ボタンで鳴らした */
   onUserStarted?: () => void
+  /** 本人が Spotify の埋め込みを直接操作した（シークバー・再生・一時停止） */
+  onUserSeek?: (sec: number) => void
+  onUserPause?: (sec: number) => void
+  onUserPlay?: (sec: number) => void
   onError: (trackId: string, reason: string) => void
 }
 
@@ -82,6 +86,9 @@ export class Deck {
   private spKicks = 0
   private spReadyWaiter: (() => void) | null = null
   private spBlocked = false
+  private spPaused = true
+  /** こちらから Spotify に最後に操作を送った時刻 */
+  private spOurAt = 0
   private startedAt = 0
   private spEndedFor: string | null = null
 
@@ -194,6 +201,7 @@ export class Deck {
               const orig = ctrl[m].bind(ctrl)
               ctrl[m] = (...args: unknown[]) => {
                 this.log(`→ sp.${m}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+                this.spOurAt = performance.now()
                 return orig(...args)
               }
             }
@@ -218,8 +226,14 @@ export class Deck {
                   `← sp update pos=${(d.position / 1000).toFixed(2)} dur=${(d.duration / 1000).toFixed(1)}` +
                     `${d.isPaused ? ' paused' : ''}${d.isBuffering ? ' buffering' : ''}`
                 )
-                this.spPos = d.position / 1000
-                this.spPosAt = performance.now()
+                // 前回の位置から予想される今の位置。これと大きく違えば誰かがシークした
+                const now = performance.now()
+                const predicted = this.spPos + (this.spPlaying ? (now - this.spPosAt) / 1000 : 0)
+                const wasPaused = this.spPaused
+                const pos = d.position / 1000
+                this.spPos = pos
+                this.spPosAt = now
+                this.spPaused = d.isPaused
                 if (d.duration) this.spDur = d.duration / 1000
                 this.spPlaying = !d.isPaused && !d.isBuffering
                 if (this.spPlaying) this.loading = false
@@ -248,6 +262,21 @@ export class Deck {
                 }
                 // 最後まで行くと位置が長さに達して止まる（一時停止の印は立たない）
                 const atEnd = d.duration > 0 && d.position >= d.duration - 500
+                // こちらが操作していないのに状態が変わったら、本人が埋め込みを直接触った。
+                // こちらの操作の直後1.5秒は、その結果なので無視する（跳ね返りで部屋を動かさない）
+                const ours = now - this.spOurAt < 1500
+                if (!ours && !reverted && !atEnd && this.active === 'sp' && !this.isPreview) {
+                  if (Math.abs(pos - predicted) > 2) {
+                    this.log(`  埋め込みでシークされた → ${pos.toFixed(2)}`)
+                    this.ev.onUserSeek?.(pos)
+                  } else if (!wasPaused && d.isPaused) {
+                    this.log('  埋め込みで一時停止された')
+                    this.ev.onUserPause?.(pos)
+                  } else if (wasPaused && !d.isPaused) {
+                    this.log('  埋め込みで再生された')
+                    this.ev.onUserPlay?.(pos)
+                  }
+                }
                 if (atEnd) this.spPlaying = false
                 if (atEnd && this.active === 'sp' && this.trackId && this.spEndedFor !== this.trackId) {
                   this.spEndedFor = this.trackId
@@ -422,12 +451,13 @@ export class Deck {
     this.show(null)
   }
 
-  play() {
+  /** at を渡すと、Spotify はその位置で鳴らす（止まっていた位置ではなく部屋の位置から再開するため） */
+  play(at?: number) {
     if (this.active === 'yt') this.yt?.playVideo()
     if (this.active === 'sc') this.sc?.play()
     // 部屋の状態が変わるたびに呼ばれるので、鳴らした直後は送り直さない
     if (this.active === 'sp' && !this.spPlaying && !this.spBlocked && performance.now() - this.spKickAt > 2500) {
-      this.kickSp(this.spNow())
+      this.kickSp(at ?? this.spNow())
     }
   }
 
@@ -445,7 +475,7 @@ export class Deck {
     }
     if (this.active === 'sp' && this.sp) {
       // 確かめている最中は重ねて送らない
-      if (this.spSeekTarget != null) return
+      // 確かめている最中でも新しいシークは捨てない（以前は捨てていて、シークバーとずれた）
       this.sp.seek(Math.round(sec))
       this.spSeekTarget = sec
       this.spSeekAt = performance.now()
